@@ -1,0 +1,510 @@
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* Smooth scrolling */
+html {
+  scroll-behavior: smooth;
+}
+
+/* Base styles */
+@layer base {
+  body {
+    @apply bg-gray-50 text-gray-900 antialiased;
+    font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+  }
+
+  * {
+    box-sizing: border-box;
+  }
+}
+
+/* React Flow Custom Styles */
+.react-flow {
+  background-color: transparent !important;
+}
+
+.react-flow__pane {
+  cursor: default;
+}
+
+.react-flow__node {
+  cursor: grab;
+}
+
+.react-flow__node:active {
+  cursor: grabbing;
+}
+
+.react-flow__handle {
+  opacity: 0;
+  transition: opacity 0.2s ease, background-color 0.15s ease, transform 0.15s ease;
+  width: 8px !important;
+  height: 8px !important;
+  border: 2px solid white !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+}
+
+.react-flow__handle:hover {
+  transform: scale(1.3);
+  background-color: #3b82f6 !important;
+}
+
+.react-flow__node:hover .react-flow__handle {
+  opacity: 1;
+}
+
+/* Node Selection Glow */
+.react-flow__node.selected {
+  z-index: 10 !important;
+}
+
+.react-flow__node.selected > div {
+  box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.5), 0 4px 16px rgba(59, 130, 246, 0.15) !important;
+}
+
+.dark .react-flow__node.selected > div {
+  box-shadow: 0 0 0 2px rgba(96, 165, 250, 0.6), 0 4px 16px rgba(96, 165, 250, 0.2) !important;
+}
+
+/* Node hover lift */
+.react-flow__node:not(.selected):hover > div {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1), 0 2px 4px rgba(0, 0, 0, 0.06) !important;
+  transform: translateY(-1px);
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.dark .react-flow__node:not(.selected):hover > div {
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3), 0 2px 4px rgba(0, 0, 0, 0.2) !important;
+}
+
+/* React Flow Controls */
+.react-flow__controls {
+  overflow: visible !important;
+  border-radius: 10px !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+
+.react-flow__controls button {
+  width: 30px !important;
+  height: 30px !important;
+  border: none !important;
+  background: white !important;
+  color: #6b7280 !important;
+  margin-bottom: 2px !important;
+  box-shadow: none !important;
+  transition: all 0.15s ease !important;
+}
+
+.react-flow__controls button:hover {
+  background: #f3f4f6 !important;
+  color: #111827 !important;
+}
+
+.react-flow__controls button:first-child {
+  border-radius: 9px 9px 0 0 !important;
+}
+
+.react-flow__controls button:last-child {
+  border-radius: 0 0 9px 9px !important;
+}
+
+/* Dark mode controls */
+.dark .react-flow__controls {
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.3), 0 1px 3px rgba(0, 0, 0, 0.2) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.dark .react-flow__controls button {
+  background: #1e293b !important;
+  color: #94a3b8 !important;
+}
+
+.dark .react-flow__controls button:hover {
+  background: #334155 !important;
+  color: #f1f5f9 !important;
+}
+
+/* Minimap */
+.react-flow__minimap {
+  border-radius: 10px !important;
+  overflow: hidden !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06) !important;
+  border: 1px solid rgba(0, 0, 0, 0.06) !important;
+}
+
+.dark .react-flow__minimap {
+  background: #0f172a !important;
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.4) !important;
+  border-color: rgba(255, 255, 255, 0.08) !important;
+}
+
+.dark .react-flow__minimap-mask {
+  fill: rgba(15, 23, 42, 0.7) !important;
+}
+
+.dark .react-flow__minimap-node {
+  fill: #475569 !important;
+  stroke: #64748b !important;
+}
+
+/* Selection Box */
+.react-flow__selection {
+  background: rgba(59, 130, 246, 0.1) !important;
+  border: 1.5px dashed rgba(59, 130, 246, 0.5) !important;
+  border-radius: 4px;
+}
+
+/* Edge styles */
+.react-flow__edge-path {
+  stroke-linecap: round;
+  transition: stroke-width 0.15s ease, filter 0.15s ease;
+}
+
+.react-flow__edge:hover .react-flow__edge-path {
+  stroke-width: 2.5px !important;
+  filter: drop-shadow(0 0 2px rgba(59, 130, 246, 0.15));
+}
+
+.react-flow__edge.selected .react-flow__edge-path {
+  stroke: #3b82f6 !important;
+  stroke-width: 2.5 !important;
+  filter: drop-shadow(0 0 4px rgba(59, 130, 246, 0.35));
+}
+
+.dark .react-flow__edge.selected .react-flow__edge-path {
+  stroke: #60a5fa !important;
+  filter: drop-shadow(0 0 4px rgba(96, 165, 250, 0.4));
+}
+
+/* Edge Label */
+.react-flow__edge-textbg {
+  fill: white !important;
+  rx: 4;
+  ry: 4;
+}
+
+.dark .react-flow__edge-textbg {
+  fill: #1e293b !important;
+}
+
+.react-flow__edge-text {
+  font-size: 11px !important;
+  font-weight: 500;
+}
+
+/* Node Resizer Custom Styles */
+.react-flow__nodeselect {
+  outline: none !important;
+}
+
+/* Resize handles */
+.react-flow__resize-control.handle {
+  width: 10px !important;
+  height: 10px !important;
+  border-radius: 50% !important;
+  background: white !important;
+  border: 2px solid #3b82f6 !important;
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15) !important;
+}
+
+.dark .react-flow__resize-control.handle {
+  background: #1e293b !important;
+  border-color: #60a5fa !important;
+}
+
+/* Custom selection color */
+::selection {
+  background: rgba(59, 130, 246, 0.2);
+}
+
+/* Scrollbar Styling */
+::-webkit-scrollbar {
+  width: 5px;
+  height: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #cbd5e1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #94a3b8;
+}
+
+.dark ::-webkit-scrollbar-thumb {
+  background: #334155;
+}
+
+.dark ::-webkit-scrollbar-thumb:hover {
+  background: #475569;
+}
+
+/* Sidebar-specific scrollbar */
+.sidebar-scroll::-webkit-scrollbar {
+  width: 4px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #e2e8f0;
+  border-radius: 10px;
+}
+
+.sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #cbd5e1;
+}
+
+.dark .sidebar-scroll::-webkit-scrollbar-thumb {
+  background: #1e293b;
+}
+
+.dark .sidebar-scroll::-webkit-scrollbar-thumb:hover {
+  background: #334155;
+}
+
+/* Tooltip & Dropdown Animations */
+@layer components {
+  .tooltip {
+    @apply opacity-0 invisible transition-opacity duration-200;
+  }
+  
+  .group:hover .tooltip {
+    @apply opacity-100 visible;
+  }
+}
+
+/* Empty State Animation */
+@keyframes float {
+  0%, 100% { transform: translateY(0px); }
+  50% { transform: translateY(-8px); }
+}
+
+@keyframes fadeInUp {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes pulse-ring {
+  0% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+  50% {
+    transform: scale(1);
+    opacity: 1;
+  }
+  100% {
+    transform: scale(0.8);
+    opacity: 0.5;
+  }
+}
+
+.animate-float {
+  animation: float 3s ease-in-out infinite;
+}
+
+.animate-fade-in-up {
+  animation: fadeInUp 0.4s ease-out;
+}
+
+.animate-pulse-ring {
+  animation: pulse-ring 2s ease-in-out infinite;
+}
+
+/* Print styles */
+@media print {
+  body {
+    background-color: #ffffff !important;
+    color: #000000 !important;
+  }
+  
+  /* Hide UI editor chrome */
+  nav, 
+  aside,
+  .react-flow__minimap, 
+  .react-flow__controls,
+  .react-flow__viewport + div, /* Context toolbars */
+  .react-flow__viewport + div + div,
+  button, 
+  input, 
+  select,
+  .no-print,
+  [role="tooltip"] {
+    display: none !important;
+  }
+
+  main {
+    width: 100vw !important;
+    height: 100vh !important;
+    position: absolute !important;
+    left: 0 !important;
+    top: 0 !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    overflow: visible !important;
+  }
+}
+
+/* Orbit Animations */
+@keyframes orbit {
+  from {
+    transform: rotate(0deg) translateX(80px) rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg) translateX(80px) rotate(-360deg);
+  }
+}
+
+.orbit-pill {
+  animation: orbit 10s linear infinite;
+}
+
+.orbit-pill:hover {
+  animation-play-state: paused;
+}
+
+/* Shake to Align & Spring Physics */
+.nodes-animating .react-flow__node {
+  transition: transform 0.6s cubic-bezier(0.34, 1.56, 0.64, 1) !important;
+}
+
+.shake-canvas {
+  animation: shake 0.6s cubic-bezier(.36,.07,.19,.97) both;
+}
+
+@keyframes shake {
+  10%, 90% { transform: translate3d(-2px, 0, 0); }
+  20%, 80% { transform: translate3d(4px, 0, 0); }
+  30%, 50%, 70% { transform: translate3d(-8px, 0, 0); }
+  40%, 60% { transform: translate3d(8px, 0, 0); }
+}
+
+/* Dropdown animation */
+@keyframes dropdownIn {
+  from {
+    opacity: 0;
+    transform: translateY(-4px) scale(0.97);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+.animate-dropdown-in {
+  animation: dropdownIn 0.15s ease-out;
+}
+
+/* Toolbar button press effect */
+.toolbar-btn {
+  transition: all 0.15s ease;
+}
+
+.toolbar-btn:active {
+  transform: scale(0.95);
+}
+
+/* Glass morphism panels */
+.glass-panel {
+  background: rgba(255, 255, 255, 0.88);
+  backdrop-filter: blur(16px) saturate(1.4);
+  -webkit-backdrop-filter: blur(16px) saturate(1.4);
+}
+
+.dark .glass-panel {
+  background: rgba(30, 41, 59, 0.88);
+  backdrop-filter: blur(16px) saturate(1.3);
+  -webkit-backdrop-filter: blur(16px) saturate(1.3);
+}
+
+/* Range input styling */
+input[type="range"] {
+  -webkit-appearance: none;
+  appearance: none;
+  height: 6px;
+  border-radius: 999px;
+  background: #e2e8f0;
+  outline: none;
+}
+
+.dark input[type="range"] {
+  background: #334155;
+}
+
+input[type="range"]::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+
+input[type="range"]::-webkit-slider-thumb:hover {
+  transform: scale(1.15);
+  box-shadow: 0 2px 6px rgba(59, 130, 246, 0.35);
+}
+
+input[type="range"]::-moz-range-thumb {
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #3b82f6;
+  border: 2px solid white;
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.15);
+  cursor: pointer;
+}
+
+/* Kbd styling in empty state */
+kbd {
+  font-family: 'SF Mono', 'Fira Code', 'Fira Mono', 'Roboto Mono', monospace;
+  font-size: 0.7em;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes scaleIn {
+  from {
+    transform: scale(0.95);
+    opacity: 0;
+  }
+  to {
+    transform: scale(1);
+    opacity: 1;
+  }
+}
+
+.animate-fade-in {
+  animation: fadeIn 0.2s ease-out forwards;
+}
+
+.animate-scale-in {
+  animation: scaleIn 0.2s cubic-bezier(0.34, 1.56, 0.64, 1) forwards;
+}
