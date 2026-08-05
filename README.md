@@ -6,7 +6,7 @@
 [![Tailwind CSS](https://img.shields.io/badge/Tailwind_CSS-3.4-38B2AC.svg)](https://tailwindcss.com/)
 [![License: AGPL v3](https://img.shields.io/badge/License-AGPL_v3-blue.svg)](LICENSE)
 
-**NodeCraft** is an interactive, browser-based diagramming and mind-mapping platform inspired by **Lucid.app**. Built with **React 19**, **TypeScript**, and **Express**, it offers user authentication, a project dashboard, auto-saving cloud document storage, freehand drawing, nested canvas portals, slide presentation mode, and rich export options.
+**NodeCraft** is an interactive, browser-based diagramming and mind-mapping platform. Built with **React 19**, **TypeScript**, and **Express**, it offers user authentication, a project dashboard, auto-saving cloud document storage, freehand drawing, nested canvas portals, slide presentation mode, and rich export options.
 
 ---
 
