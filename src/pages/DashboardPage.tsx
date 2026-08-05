@@ -102,7 +102,7 @@ export const DashboardPage: React.FC = () => {
   };
 
   const filteredProjects = projects.filter((p) =>
-    p.name.toLowerCase().includes(searchQuery.toLowerCase())
+    (p.name || '').toLowerCase().includes((searchQuery || '').toLowerCase())
   );
 
   const formatDate = (dateStr: string) => {

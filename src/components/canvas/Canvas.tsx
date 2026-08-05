@@ -549,62 +549,7 @@ function CanvasContent() {
       }, 300);
       return () => clearTimeout(t);
     }
-  }, [presentationMode]); // presentationNodes excluded since we read nodes directly from store for fresh data
-
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        e.key.toLowerCase() === 'p' && 
-        active?.tagName !== 'INPUT' && 
-        active?.tagName !== 'TEXTAREA' &&
-        active?.tagName !== 'SELECT' &&
-        !active?.isContentEditable
-      ) {
-        e.preventDefault();
-        setPresentationMode(!presentationMode);
-        showToast(!presentationMode ? 'Entered Presentation Mode (Press P to exit)' : 'Exited Presentation Mode', 'info');
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [presentationMode, showToast]);
-
-  // Spawn sticky note shortcut ('n' key)
-  useEffect(() => {
-    const handleKeyDown = (e: KeyboardEvent) => {
-      const active = document.activeElement as HTMLElement | null;
-      if (
-        e.key.toLowerCase() === 'n' &&
-        active?.tagName !== 'INPUT' &&
-        active?.tagName !== 'TEXTAREA' &&
-        active?.tagName !== 'SELECT' &&
-        !active?.isContentEditable
-      ) {
-        e.preventDefault();
-        
-        if (reactFlowInstance) {
-          const position = reactFlowInstance.screenToFlowPosition({
-            x: window.innerWidth / 2,
-            y: window.innerHeight / 2
-          });
-          // Use the store's addNode action so the new node gets the same defaults
-          // (uuid, width/height, default colors) as a sidebar-dragged sticky.
-          addNode('sticky', { x: position.x - 75, y: position.y - 75 }, {
-            label: 'Double click to edit',
-            color: '#fef08a',
-            borderColor: '#eab308',
-            fontFamily: 'handwriting',
-            fontSize: 14,
-            align: 'center',
-          });
-          showToast('Spawned a new sticky note! (Double-click to write)', 'success');
-        }
-      }
-    };
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [reactFlowInstance, addNode, showToast]);
+  }, [presentationMode]);
 
   // Delete selected nodes and edges with Delete/Backspace key
   const deleteSelectedNodes = useCallback(() => {
@@ -637,10 +582,51 @@ function CanvasContent() {
     }
   }, [showToast]);
 
+  // Unified keyboard shortcuts listener
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLElement) {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA' || e.target.tagName === 'SELECT' || e.target.isContentEditable) return;
+      const target = e.target as HTMLElement | null;
+      const active = document.activeElement as HTMLElement | null;
+      if (
+        target?.tagName === 'INPUT' ||
+        target?.tagName === 'TEXTAREA' ||
+        target?.tagName === 'SELECT' ||
+        target?.isContentEditable ||
+        active?.tagName === 'INPUT' ||
+        active?.tagName === 'TEXTAREA' ||
+        active?.tagName === 'SELECT' ||
+        active?.isContentEditable
+      ) {
+        return;
+      }
+
+      // Toggle Presentation mode with P key
+      if (e.key.toLowerCase() === 'p' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        setPresentationMode(!presentationMode);
+        showToast(!presentationMode ? 'Entered Presentation Mode (Press P to exit)' : 'Exited Presentation Mode', 'info');
+        return;
+      }
+
+      // Spawn sticky note shortcut ('N' key)
+      if (e.key.toLowerCase() === 'n' && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        e.preventDefault();
+        if (reactFlowInstance) {
+          const position = reactFlowInstance.screenToFlowPosition({
+            x: window.innerWidth / 2,
+            y: window.innerHeight / 2
+          });
+          addNode('sticky', { x: position.x - 75, y: position.y - 75 }, {
+            label: 'Double click to edit',
+            color: '#fef08a',
+            borderColor: '#eab308',
+            fontFamily: 'handwriting',
+            fontSize: 14,
+            align: 'center',
+          });
+          showToast('Spawned a new sticky note! (Double-click to write)', 'success');
+        }
+        return;
       }
 
       // Slide navigation in Presentation Mode
@@ -666,8 +652,6 @@ function CanvasContent() {
       }
 
       // Mind-map shortcuts: Tab adds a child, Enter adds a sibling.
-      // Only fires when exactly one node is selected and the user isn't
-      // typing into a form field.
       if ((e.key === 'Tab' || e.key === 'Enter') && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const selectedNodes = getNodes().filter((n) => n.selected);
         if (selectedNodes.length === 1) {
@@ -768,7 +752,7 @@ function CanvasContent() {
       }
 
       // Toggle grid snap with G key
-      if (e.key === 'g' && !e.ctrlKey && !e.metaKey) {
+      if (e.key.toLowerCase() === 'g' && !e.ctrlKey && !e.metaKey) {
         e.preventDefault();
         toggleSnapToGrid();
         showToast(`Snap to grid ${!snapToGrid ? 'enabled' : 'disabled'}`, 'info');
@@ -784,7 +768,25 @@ function CanvasContent() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [showToast, snapToGrid, toggleSnapToGrid, deleteSelectedNodes, reactFlowInstance, presentationMode, currentSlideIndex, presentationNodes, showHelpModal, setShowHelpModal, addChildNode, addSiblingNode, getNodes, selectNode]);
+  }, [
+    showToast,
+    snapToGrid,
+    toggleSnapToGrid,
+    deleteSelectedNodes,
+    reactFlowInstance,
+    presentationMode,
+    setPresentationMode,
+    currentSlideIndex,
+    presentationNodes,
+    focusSlide,
+    showHelpModal,
+    setShowHelpModal,
+    addChildNode,
+    addSiblingNode,
+    addNode,
+    getNodes,
+    selectNode
+  ]);
 
   useEffect(() => {
     const handleGlobalPaste = (event: ClipboardEvent) => {

@@ -7,9 +7,13 @@ import { authenticateToken } from './auth.js';
 
 const router = express.Router();
 
+const sanitizePath = (str) => String(str || '').replace(/[^a-zA-Z0-9_-]/g, '');
+
 // Helper to get user project file path
 const getProjectPath = (username, projectId) => {
-  return path.join(projectsDir, username, `${projectId}.ncraft`);
+  const cleanUser = sanitizePath(username);
+  const cleanId = sanitizePath(projectId);
+  return path.join(projectsDir, cleanUser, `${cleanId}.ncraft`);
 };
 
 // GET /api/projects — List all user projects
@@ -99,13 +103,18 @@ router.post('/', authenticateToken, (req, res) => {
   };
 
   // Write file to disk
-  const userFolder = path.join(projectsDir, username);
-  if (!fs.existsSync(userFolder)) {
-    fs.mkdirSync(userFolder, { recursive: true });
-  }
+  try {
+    const userFolder = path.join(projectsDir, sanitizePath(username));
+    if (!fs.existsSync(userFolder)) {
+      fs.mkdirSync(userFolder, { recursive: true });
+    }
 
-  const filePath = getProjectPath(username, projectId);
-  fs.writeFileSync(filePath, JSON.stringify(projectFileEnvelope, null, 2), 'utf8');
+    const filePath = getProjectPath(username, projectId);
+    fs.writeFileSync(filePath, JSON.stringify(projectFileEnvelope, null, 2), 'utf8');
+  } catch (fsErr) {
+    console.error('File write error:', fsErr);
+    return res.status(500).json({ error: 'Failed to create project file on server' });
+  }
 
   // Record in DB
   db.run(
@@ -193,7 +202,12 @@ router.put('/:id', authenticateToken, (req, res) => {
       };
 
       const filePath = getProjectPath(username, projectId);
-      fs.writeFileSync(filePath, JSON.stringify(projectFileEnvelope, null, 2), 'utf8');
+      try {
+        fs.writeFileSync(filePath, JSON.stringify(projectFileEnvelope, null, 2), 'utf8');
+      } catch (fsErr) {
+        console.error('Save file error:', fsErr);
+        return res.status(500).json({ error: 'Failed to save project file to server' });
+      }
 
       db.run(
         `UPDATE projects SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
