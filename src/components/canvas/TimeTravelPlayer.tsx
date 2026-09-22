@@ -40,6 +40,11 @@ export function TimeTravelPlayer() {
   }, [isPlaying, futureStates.length]);
 
   const handleScrub = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Pause playback to prevent the interval from racing with manual scrub
+    if (isPlaying) {
+      setIsPlaying(false);
+      clearPlayInterval();
+    }
     const targetIndex = parseInt(e.target.value, 10);
     const delta = targetIndex - currentIndex;
     
@@ -66,6 +71,7 @@ export function TimeTravelPlayer() {
       }
       
       setIsPlaying(true);
+      clearPlayInterval();
       playIntervalRef.current = window.setInterval(() => {
         const { futureStates: future } = temporal.getState();
         if (future.length > 0) {

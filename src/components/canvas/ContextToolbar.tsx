@@ -307,12 +307,13 @@ export function ContextToolbar() {
           onChange={(e) => {
             const newType = e.target.value as ShapeNodeData['shapeType'];
             const dims = getDefaultNodeDimensions(newType);
-            // Use updateNodeData (the proper store action) instead of bypassing
-            // it with raw setState. We only set shapeType + size; stale fields
-            // from the previous shape (status/assignee on card, imageUrl on image)
-            // will simply be ignored by the renderer for the new shape, which is
-            // good enough — they'll be cleared if the user ever converts back.
-            updateNodeData(nodeId, { shapeType: newType });
+            // Clear portalId when converting away from portal so node becomes visible on main canvas
+            const prevType = data.shapeType;
+            if (prevType === 'portal' && newType !== 'portal') {
+              updateNodeData(nodeId, { shapeType: newType, portalId: null as unknown as string } as Partial<ShapeNodeData>);
+            } else {
+              updateNodeData(nodeId, { shapeType: newType });
+            }
             // Also update the node's dimensions so React Flow re-measures.
             const { nodes } = useDiagramStore.getState();
             useDiagramStore.setState({
@@ -459,8 +460,8 @@ export function ContextToolbar() {
           <>
             <button
               onClick={() => {
-                const currentOrbits = data.ideaOrbits || [];
-                const label = data.label.toLowerCase();
+                const currentOrbits = Array.isArray(data.ideaOrbits) ? data.ideaOrbits : [];
+                const label = (data.label || '').toLowerCase();
                 const mockIdeas = ['Scale', 'Optimize', 'Launch'];
                 if (label.includes('market')) mockIdeas.splice(0, 3, 'Social Media', 'SEO', 'Content Strategy');
                 if (label.includes('design')) mockIdeas.splice(0, 3, 'Figma', 'User Testing', 'Accessibility');
@@ -492,7 +493,18 @@ export function ContextToolbar() {
 
         {/* Delete */}
         <button 
-          onClick={() => useDiagramStore.getState().onNodesChange([{ type: 'remove', id: selectedNode.id }])}
+          onClick={() => {
+            const store = useDiagramStore.getState();
+            if (store.activeCanvasId === selectedNode.id) {
+              store.setActiveCanvasId(null);
+            }
+            const { edges } = store;
+            const edgesToRemove = edges.filter(e => e.source === selectedNode.id || e.target === selectedNode.id);
+            store.onNodesChange([{ type: 'remove', id: selectedNode.id }]);
+            if (edgesToRemove.length > 0) {
+              store.onEdgesChange(edgesToRemove.map(e => ({ type: 'remove', id: e.id })));
+            }
+          }}
           className="toolbar-btn p-1.5 rounded-lg text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 transition-all shrink-0"
           title="Delete Shape"
         >
@@ -593,8 +605,8 @@ export function ContextToolbar() {
             className="w-20 text-xs bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-0.5 outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 transition-shadow"
             onKeyDown={(e) => {
               if (e.key === 'Enter' && e.currentTarget.value.trim()) {
-                const newTag = e.currentTarget.value.trim();
-                const currentTags = data.tags || [];
+                const newTag = e.currentTarget.value.trim().slice(0, 50);
+                const currentTags = Array.isArray(data.tags) ? data.tags : [];
                 if (!currentTags.includes(newTag)) {
                   updateNodeData(nodeId, { tags: [...currentTags, newTag] });
                 }
@@ -619,7 +631,7 @@ export function ContextToolbar() {
                 <button
                   onClick={() => {
                     const newUserVotes = [...userVotes];
-                    let newVotes = data.votes || 0;
+                    let newVotes = typeof data.votes === 'number' && Number.isFinite(data.votes) ? data.votes : 0;
                     if (hasVoted) {
                       newVotes = Math.max(0, newVotes - 1);
                       const idx = newUserVotes.indexOf(nodeId);

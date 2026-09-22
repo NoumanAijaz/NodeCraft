@@ -6,19 +6,39 @@ import path from 'path';
 import db, { projectsDir } from './db.js';
 
 const router = express.Router();
-export const JWT_SECRET = process.env.JWT_SECRET || 'nodecraft-secret-jwt-key-change-in-production';
+export const JWT_SECRET = (() => {
+  if (process.env.JWT_SECRET) return process.env.JWT_SECRET;
+  const fallback = 'nodecraft-secret-jwt-key-change-in-production';
+  if (process.env.NODE_ENV === 'production') {
+    console.error(
+      'FATAL: JWT_SECRET is not set in production — refusing to start with insecure fallback.'
+    );
+    process.exit(1);
+  } else {
+    console.warn(
+      '⚠️  JWT_SECRET not set — using insecure development fallback. Set JWT_SECRET env var for production.'
+    );
+  }
+  return fallback;
+})();
 
 // Auth middleware to verify JWT
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  const token = authHeader && authHeader.split(' ')[1];
+  const match = typeof authHeader === 'string' && authHeader.match(/^Bearer (.+)$/);
+  const token = match && match[1];
 
   if (!token) {
     return res.status(401).json({ error: 'Access token required' });
   }
 
-  jwt.verify(token, JWT_SECRET, (err, user) => {
+  jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
     if (err) {
+      return res.status(403).json({ error: 'Invalid or expired token' });
+    }
+    // Reject structurally valid tokens that lack our payload shape (e.g. a
+    // token minted against a different secret/service reusing this key).
+    if (!user || typeof user.userId !== 'number' || typeof user.username !== 'string') {
       return res.status(403).json({ error: 'Invalid or expired token' });
     }
     req.user = user;
@@ -28,7 +48,11 @@ export const authenticateToken = (req, res, next) => {
 
 // POST /api/auth/register
 router.post('/register', async (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body ?? {};
+
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -43,8 +67,14 @@ router.post('/register', async (req, res) => {
     return res.status(400).json({ error: 'Username can only contain letters, numbers, underscores, and hyphens' });
   }
 
-  if (password.length < 4) {
-    return res.status(400).json({ error: 'Password must be at least 4 characters long' });
+  if (password.length < 8) {
+    return res.status(400).json({ error: 'Password must be at least 8 characters long' });
+  }
+
+  // bcrypt truncates input at 72 bytes — cap length so users don't get
+  // less security than they believe.
+  if (password.length > 128) {
+    return res.status(400).json({ error: 'Password must be at most 128 characters long' });
   }
 
   try {
@@ -82,14 +112,18 @@ router.post('/register', async (req, res) => {
         });
       }
     );
-  } catch (error) {
+  } catch {
     return res.status(500).json({ error: 'Internal server error' });
   }
 });
 
 // POST /api/auth/login
 router.post('/login', (req, res) => {
-  const { username, password } = req.body;
+  const { username, password } = req.body ?? {};
+
+  if (typeof username !== 'string' || typeof password !== 'string') {
+    return res.status(400).json({ error: 'Username and password are required' });
+  }
 
   if (!username || !password) {
     return res.status(400).json({ error: 'Username and password are required' });
@@ -109,7 +143,12 @@ router.post('/login', (req, res) => {
         return res.status(401).json({ error: 'Invalid username or password' });
       }
 
-      const validPassword = await bcrypt.compare(password, user.password_hash);
+      let validPassword = false;
+      try {
+        validPassword = await bcrypt.compare(password, user.password_hash);
+      } catch {
+        return res.status(500).json({ error: 'Authentication failed' });
+      }
       if (!validPassword) {
         return res.status(401).json({ error: 'Invalid username or password' });
       }

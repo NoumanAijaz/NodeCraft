@@ -1,6 +1,7 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useState, useRef, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
+import { useToast } from '../context/ToastContext';
 import { api, type ProjectMeta } from '../utils/api';
 import {
   LayoutGrid,
@@ -24,32 +25,44 @@ import {
 export const DashboardPage: React.FC = () => {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
+  const { showToast } = useToast();
 
   const [projects, setProjects] = useState<ProjectMeta[]>([]);
   const [loading, setLoading] = useState<boolean>(true);
+  const [fetchError, setFetchError] = useState<string | null>(null);
   const [searchQuery, setSearchQuery] = useState<string>('');
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editingName, setEditingName] = useState<string>('');
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null);
   const [creating, setCreating] = useState<boolean>(false);
+  const mountedRef = useRef(true);
 
-  useEffect(() => {
-    fetchProjects();
-  }, []);
-
-  const fetchProjects = async () => {
+  const fetchProjects = useCallback(async () => {
     try {
       setLoading(true);
+      setFetchError(null);
       const data = await api.get('/projects');
+      if (!mountedRef.current) return;
       setProjects(data.projects || []);
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to fetch projects:', err);
+      if (!mountedRef.current) return;
+      const msg = err?.message || 'Failed to load documents';
+      setFetchError(msg);
+      showToast(msg, 'error');
     } finally {
-      setLoading(false);
+      if (mountedRef.current) setLoading(false);
     }
-  };
+  }, [showToast]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    fetchProjects();
+    return () => { mountedRef.current = false; };
+  }, [fetchProjects]);
 
   const handleCreateProject = async (template?: string) => {
+    if (creating) return;
     try {
       setCreating(true);
       const templateName = template ? `${template.charAt(0).toUpperCase() + template.slice(1)} Diagram` : 'Untitled Diagram';
@@ -59,10 +72,12 @@ export const DashboardPage: React.FC = () => {
       });
 
       if (res.project && res.project.id) {
+        showToast(`Created ${templateName}`, 'success');
         navigate(`/project/${res.project.id}`);
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Failed to create project:', err);
+      showToast(err?.message || 'Failed to create project', 'error');
     } finally {
       setCreating(false);
     }
@@ -85,8 +100,10 @@ export const DashboardPage: React.FC = () => {
         prev.map((p) => (p.id === id ? { ...p, name: editingName.trim() } : p))
       );
       setEditingId(null);
-    } catch (err) {
+      showToast('Renamed successfully', 'success');
+    } catch (err: any) {
       console.error('Failed to rename project:', err);
+      showToast(err?.message || 'Failed to rename project', 'error');
     }
   };
 
@@ -96,8 +113,10 @@ export const DashboardPage: React.FC = () => {
       await api.delete(`/projects/${id}`);
       setProjects((prev) => prev.filter((p) => p.id !== id));
       setDeleteConfirmId(null);
-    } catch (err) {
+      showToast('Document deleted', 'success');
+    } catch (err: any) {
       console.error('Failed to delete project:', err);
+      showToast(err?.message || 'Failed to delete project', 'error');
     }
   };
 
@@ -108,8 +127,12 @@ export const DashboardPage: React.FC = () => {
   const formatDate = (dateStr: string) => {
     if (!dateStr) return '';
     const date = new Date(dateStr);
+    if (isNaN(date.getTime())) return 'Invalid date';
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
+    if (diffMs < 0) {
+      return date.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+    }
     const diffMins = Math.floor(diffMs / (1000 * 60));
     const diffHours = Math.floor(diffMs / (1000 * 60 * 60));
     const diffDays = Math.floor(diffMs / (1000 * 60 * 60 * 24));
@@ -253,6 +276,13 @@ export const DashboardPage: React.FC = () => {
             </h2>
           </div>
 
+          {fetchError && !loading && (
+            <div className="mb-4 bg-rose-950/40 border border-rose-800/50 rounded-xl p-3 flex items-center justify-between">
+              <p className="text-xs text-rose-300">{fetchError}</p>
+              <button onClick={fetchProjects} className="text-xs font-semibold text-rose-300 hover:text-white underline">Retry</button>
+            </div>
+          )}
+
           {loading ? (
             <div className="py-20 flex flex-col items-center justify-center text-slate-500">
               <div className="w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full animate-spin mb-3" />
@@ -303,7 +333,10 @@ export const DashboardPage: React.FC = () => {
                           type="text"
                           value={editingName}
                           onChange={(e) => setEditingName(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && handleSaveRename(e, proj.id)}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') handleSaveRename(e, proj.id);
+                            if (e.key === 'Escape') { setEditingId(null); setEditingName(''); }
+                          }}
                           className="bg-slate-950 border border-blue-500 text-xs text-white rounded px-2 py-1 w-full focus:outline-none"
                           autoFocus
                         />

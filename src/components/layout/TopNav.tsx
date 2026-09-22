@@ -27,10 +27,14 @@ import {
   Unlock,
   FileJson,
   Printer,
-  ArrowLeft
+  ArrowLeft,
+  GitBranch,
+  History
 } from 'lucide-react';
-import { toPng } from 'html-to-image';
-import { getNodesBounds, getViewportForBounds } from '@xyflow/react';
+import { exportNodesToPng, downloadDataUrl } from '../../utils/pngExport';
+import { parseMermaid } from '../../utils/mermaid';
+import { MermaidImportModal } from '../ui/MermaidImportModal';
+import { VersionHistoryModal } from '../ui/VersionHistoryModal';
 import type { Node as RFNode } from '@xyflow/react';
 import { exportToSVG, downloadSVG } from '../../utils/svgExport';
 import { useToast } from '../../context/ToastContext';
@@ -57,6 +61,7 @@ export function TopNav() {
   const nodes = useDiagramStore((state) => state.nodes);
   const edges = useDiagramStore((state) => state.edges);
   const theme = useDiagramStore((state) => state.theme);
+  const canvasColor = useDiagramStore((state) => state.canvasColor);
   const toggleTheme = useDiagramStore((state) => state.toggleTheme);
   const fileHandle = useDiagramStore((state) => state.fileHandle);
   const fileName = useDiagramStore((state) => state.fileName);
@@ -73,6 +78,8 @@ export function TopNav() {
   const zoom = useDiagramStore((state) => state.zoom);
   const isLocked = useDiagramStore((state) => state.isLocked);
   const setIsLocked = useDiagramStore((state) => state.setIsLocked);
+  const lastSavedSnapshot = useDiagramStore((state) => state.lastSavedSnapshot);
+  const markSaved = useDiagramStore((state) => state.markSaved);
   
   const { showToast } = useToast();
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
@@ -81,6 +88,8 @@ export function TopNav() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [templateOpen, setTemplateOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  const [mermaidOpen, setMermaidOpen] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
   const templateRef = useRef<HTMLDivElement>(null);
   const exportRef = useRef<HTMLDivElement>(null);
@@ -129,6 +138,53 @@ export function TopNav() {
     document.addEventListener('mousedown', handleOutsideClick);
     return () => document.removeEventListener('mousedown', handleOutsideClick);
   }, []);
+
+  // Listen for palette-triggered Mermaid import
+  useEffect(() => {
+    const openMermaid = () => setMermaidOpen(true);
+    const openVersions = () => {
+      if (useDiagramStore.getState().projectId) setVersionsOpen(true);
+      else showToast('Version history is available for cloud projects', 'warning');
+    };
+    window.addEventListener('nodecraft-open-mermaid', openMermaid);
+    window.addEventListener('nodecraft-open-versions', openVersions);
+    return () => {
+      window.removeEventListener('nodecraft-open-mermaid', openMermaid);
+      window.removeEventListener('nodecraft-open-versions', openVersions);
+    };
+  }, [showToast]);
+
+  const handleVersionRestored = (data: any, name: string) => {
+    const store = useDiagramStore.getState();
+    store.loadProject({ ...data, nodes: data.nodes || [], edges: data.edges || [] });
+    if (projectId && name) store.setProjectDetails(projectId, name);
+    // loadProject snapshots restored state as saved — correct: server file IS this state now
+    setTimeout(() => reactFlowInstance?.fitView({ duration: 400, padding: 0.15 }), 60);
+  };
+
+  const handleMermaidImport = (text: string) => {
+    try {
+      const result = parseMermaid(text);
+      if (result.nodes.length === 0) {
+        showToast('Nothing to import — check the diagram syntax', 'warning');
+        return;
+      }
+      useDiagramStore.setState({
+        nodes: result.nodes,
+        edges: result.edges,
+        lastSavedSnapshot: null,
+        fileHandle: null,
+        fileName: null,
+      });
+      useDiagramStore.temporal.getState().clear();
+      setMermaidOpen(false);
+      setTimeout(() => reactFlowInstance?.fitView({ duration: 500, padding: 0.15 }), 80);
+      showToast(`Imported ${result.nodes.length} nodes · ${result.edges.length} edges from Mermaid`, 'success');
+    } catch (err: any) {
+      console.error('Mermaid import failed:', err);
+      showToast('Failed to import Mermaid diagram', 'error');
+    }
+  };
 
   const handleNavigate = (node: RFNode) => {
     if (reactFlowInstance && typeof reactFlowInstance.setCenter === 'function') {
@@ -230,12 +286,16 @@ export function TopNav() {
         gridType: state.gridType,
         canvasColor: state.canvasColor,
       };
+      // Snapshot the EXACT payload being uploaded — taking it after the await
+      // would mark mid-save edits as saved without uploading them.
+      const snapshot = JSON.stringify({ nodes: state.nodes, edges: state.edges });
 
       await api.put(`/projects/${projectId}`, {
         data: diagramData,
         name: projectName || 'Untitled Diagram',
       });
 
+      markSaved(snapshot);
       setSaveStatus('saved');
       if (!silent) {
         showToast('Saved to cloud', 'success');
@@ -247,18 +307,23 @@ export function TopNav() {
         showToast('Failed to save to cloud', 'error');
       }
     }
-  }, [projectId, projectName, showToast]);
+  }, [projectId, projectName, showToast, markSaved]);
 
-  // 3-second debounced auto-save effect
+  // 3-second debounced auto-save effect — skip when no actual edits since last save/load
   useEffect(() => {
     if (!projectId) return;
+    const current = JSON.stringify({ nodes, edges });
+    if (lastSavedSnapshot && current === lastSavedSnapshot) {
+      setSaveStatus('saved');
+      return;
+    }
     setSaveStatus('unsaved');
     const timer = setTimeout(() => {
       handleCloudSave(true);
     }, 3000);
 
     return () => clearTimeout(timer);
-  }, [nodes, edges, projectId, handleCloudSave]);
+  }, [nodes, edges, projectId, handleCloudSave, lastSavedSnapshot]);
 
   const saveToFileHandle = async (handle: FileSystemFileHandle) => {
     let writable: FileSystemWritableFileStream | undefined;
@@ -272,7 +337,7 @@ export function TopNav() {
     } catch (error) {
       console.error(error);
       if (writable && typeof writable.abort === 'function') {
-        try { await writable.abort(); } catch(e) {}
+        try { await writable.abort(); } catch {}
       }
       return false;
     }
@@ -319,7 +384,7 @@ export function TopNav() {
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
     showToast('Project downloaded', 'success');
   };
 
@@ -365,16 +430,21 @@ export function TopNav() {
 
     setExportOpen(false);
 
+    const getFilename = (ext: string) => {
+      const name = (projectName || fileName || 'nodecraft-diagram').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 100) || 'nodecraft-diagram';
+      return `${name}.${ext}`;
+    };
+
     if (format === 'svg') {
       try {
         const isDark = theme === 'dark';
-        const backgroundColor = isDark ? '#0f172a' : '#f8fafc';
+        const backgroundColor = canvasColor || (isDark ? '#0f172a' : '#f8fafc');
         const svgContent = exportToSVG(nodes, edges, {
           padding: 50,
           includeBackground: true,
           backgroundColor
         });
-        downloadSVG(svgContent, 'nodecraft-diagram.svg');
+        downloadSVG(svgContent, getFilename('svg'));
         showToast('Diagram exported as SVG', 'success');
       } catch (error) {
         console.error('Error exporting SVG:', error);
@@ -385,49 +455,24 @@ export function TopNav() {
     
     if (format === 'png') {
       try {
-        const nodesBounds = getNodesBounds(nodes);
-        const imageWidth = nodesBounds.width + 100;
-        const imageHeight = nodesBounds.height + 100;
-
-        const viewport = getViewportForBounds(
-          nodesBounds,
-          imageWidth,
-          imageHeight,
-          0.5,
-          2,
-          0
-        );
-
-        const viewportElement = document.querySelector('.react-flow__viewport') as HTMLElement;
-        if (!viewportElement) {
-          showToast('Failed to export diagram', 'error');
+        const backgroundColor = canvasColor || (theme === 'dark' ? '#0f172a' : '#f8fafc');
+        const result = await exportNodesToPng(nodes, { backgroundColor });
+        if (!result.ok) {
+          if (result.reason === 'no-viewport') {
+            showToast('Canvas not ready — try again', 'warning');
+          } else {
+            console.error('Error exporting PNG:', result.error);
+            showToast('Failed to export diagram', 'error');
+          }
           return;
         }
-
-        const filter = (node: HTMLElement) => {
-          const exclusionClasses = ['react-flow__minimap', 'react-flow__controls'];
-          return !exclusionClasses.some((className) => node.classList?.contains(className));
-        };
-
-        const dataUrl = await toPng(viewportElement, {
-          filter,
-          backgroundColor: theme === 'dark' ? '#0f172a' : '#f8fafc',
-          width: imageWidth,
-          height: imageHeight,
-          style: {
-            width: `${imageWidth}px`,
-            height: `${imageHeight}px`,
-            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-          },
-        });
-
-        const a = document.createElement('a');
-        a.setAttribute('download', 'nodecraft-diagram.png');
-        a.setAttribute('href', dataUrl);
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        showToast('Diagram exported as PNG', 'success');
+        downloadDataUrl(result.dataUrl, getFilename('png'));
+        showToast(
+          result.pixelRatio < 1
+            ? 'Exported PNG (downscaled to fit large diagram)'
+            : 'Diagram exported as PNG',
+          'success'
+        );
       } catch (err) {
         console.error('Error exporting PNG:', err);
         showToast('Failed to export diagram', 'error');
@@ -456,12 +501,12 @@ export function TopNav() {
       
       const link = document.createElement('a');
       link.href = url;
-      link.download = fileName ? `${fileName.replace('.json', '')}.json` : 'nodecraft-project.json';
+      link.download = fileName ? `${fileName.replace(/\.json$/, '')}.json` : 'nodecraft-project.json';
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
       
-      URL.revokeObjectURL(url);
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
       showToast('Project exported as JSON successfully', 'success');
       setExportOpen(false);
     } catch (error) {
@@ -523,6 +568,11 @@ export function TopNav() {
     }
     setZoomEditing(false);
   };
+  const handlersRef = useRef({ handleNew, handleOpen, handleSave, handleSaveAs });
+  useEffect(() => {
+    handlersRef.current = { handleNew, handleOpen, handleSave, handleSaveAs };
+  });
+
   useEffect(() => {
     const handleFileShortcuts = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement) {
@@ -541,22 +591,22 @@ export function TopNav() {
       if (isMod && e.key.toLowerCase() === 's') {
         e.preventDefault();
         if (e.shiftKey) {
-          handleSaveAs();
+          handlersRef.current.handleSaveAs();
         } else {
-          handleSave();
+          handlersRef.current.handleSave();
         }
       } else if (isMod && e.key.toLowerCase() === 'o') {
         e.preventDefault();
-        handleOpen();
+        handlersRef.current.handleOpen();
       } else if (isMod && e.key.toLowerCase() === 'n') {
         e.preventDefault();
-        handleNew();
+        handlersRef.current.handleNew();
       }
     };
 
     window.addEventListener('keydown', handleFileShortcuts);
     return () => window.removeEventListener('keydown', handleFileShortcuts);
-  }, [fileHandle, nodes, fileName]);
+  }, []);
   const btnClass = "p-1.5 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-gray-700 dark:hover:text-gray-200 rounded-md transition-all active:scale-95";
   const textBtnClass = "flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-md transition-all active:scale-95";
 
@@ -640,6 +690,9 @@ export function TopNav() {
               <button onClick={handleImportJSON} className="w-full text-left px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center gap-2.5 transition-colors rounded-lg mx-0">
                 <FolderOpen size={14} className="text-blue-500" />Import JSON...
               </button>
+              <button onClick={() => { setMermaidOpen(true); setMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center gap-2.5 transition-colors rounded-lg mx-0">
+                <GitBranch size={14} className="text-violet-500" />Import Mermaid...
+              </button>
               <div className="h-px bg-gray-100 dark:bg-gray-700/50 my-1 mx-2" />
               <button onClick={handleSave} className="w-full text-left px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center justify-between transition-colors rounded-lg mx-0">
                 <span className="flex items-center gap-2.5"><Save size={14} className="text-gray-400" />Save</span>
@@ -649,6 +702,11 @@ export function TopNav() {
                 <span className="flex items-center gap-2.5"><Save size={14} className="text-gray-400" />Save As...</span>
                 <kbd className="text-[10px] text-gray-400 dark:text-gray-500 font-mono bg-gray-100 dark:bg-slate-700 px-1.5 py-0.5 rounded">{isMac ? '⇧⌘S' : 'Ctrl+Shift+S'}</kbd>
               </button>
+              {projectId && (
+                <button onClick={() => { setVersionsOpen(true); setMenuOpen(false); }} className="w-full text-left px-3 py-2 text-xs text-gray-700 dark:text-gray-300 hover:bg-gray-50 dark:hover:bg-slate-700/50 flex items-center gap-2.5 transition-colors rounded-lg mx-0">
+                  <History size={14} className="text-blue-500" />Version History...
+                </button>
+              )}
             </div>
           )}
         </div>
@@ -896,6 +954,19 @@ export function TopNav() {
           <span className="hidden sm:inline">Share</span>
         </button>
       </div>
+
+      <MermaidImportModal
+        isOpen={mermaidOpen}
+        onClose={() => setMermaidOpen(false)}
+        onImport={handleMermaidImport}
+      />
+      <VersionHistoryModal
+        isOpen={versionsOpen}
+        projectId={projectId}
+        onClose={() => setVersionsOpen(false)}
+        onRestored={handleVersionRestored}
+        showToast={showToast}
+      />
     </nav>
   );
 }

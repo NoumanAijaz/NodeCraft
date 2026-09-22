@@ -15,7 +15,8 @@ export const RegisterPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password || !confirmPassword) {
+    const cleanUsername = username.trim();
+    if (!cleanUsername || !password || !confirmPassword) {
       setError('Please fill in all fields');
       return;
     }
@@ -25,8 +26,8 @@ export const RegisterPage: React.FC = () => {
       return;
     }
 
-    if (password.length < 4) {
-      setError('Password must be at least 4 characters long');
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters long');
       return;
     }
 
@@ -34,12 +35,12 @@ export const RegisterPage: React.FC = () => {
     setLoading(true);
 
     try {
-      const data = await api.post('/auth/register', { username, password });
+      const data = await api.post('/auth/register', { username: cleanUsername, password });
       login(data.token, data.user);
+      setLoading(false);
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Registration failed. Please try another username.');
-    } finally {
       setLoading(false);
     }
   };

@@ -14,7 +14,8 @@ export const LoginPage: React.FC = () => {
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!username.trim() || !password) {
+    const cleanUsername = username.trim();
+    if (!cleanUsername || !password) {
       setError('Please fill in all fields');
       return;
     }
@@ -23,12 +24,12 @@ export const LoginPage: React.FC = () => {
     setLoading(true);
 
     try {
-      const data = await api.post('/auth/login', { username, password });
+      const data = await api.post('/auth/login', { username: cleanUsername, password });
       login(data.token, data.user);
+      setLoading(false);
       navigate('/dashboard');
     } catch (err: any) {
       setError(err.message || 'Login failed. Please check your credentials.');
-    } finally {
       setLoading(false);
     }
   };

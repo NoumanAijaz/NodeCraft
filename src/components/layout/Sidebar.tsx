@@ -21,6 +21,7 @@ export function Sidebar() {
   const addNode = useDiagramStore((state) => state.addNode);
   const nodes = useDiagramStore((state) => state.nodes);
   const rfInstance = useDiagramStore((state) => state.reactFlowInstance);
+  const isLocked = useDiagramStore((state) => state.isLocked);
   
   const frameNodes = nodes
     .filter(n => n.type === 'shape' && (n.data as any).shapeType === 'frame')
@@ -44,7 +45,13 @@ export function Sidebar() {
   };
 
   const onDragStart = (event: React.DragEvent, nodeType: ShapeType) => {
+    if (isLocked) {
+      event.preventDefault();
+      return;
+    }
     event.dataTransfer.setData('application/reactflow', nodeType);
+    // Firefox requires text/plain
+    event.dataTransfer.setData('text/plain', nodeType);
     event.dataTransfer.effectAllowed = 'move';
   };
 
@@ -60,12 +67,18 @@ export function Sidebar() {
   ];
 
   const onStickerDragStart = (event: React.DragEvent, emoji: string) => {
+    if (isLocked) {
+      event.preventDefault();
+      return;
+    }
     event.dataTransfer.setData('application/reactflow', 'sticker');
     event.dataTransfer.setData('application/reactflow-emoji', emoji);
+    event.dataTransfer.setData('text/plain', emoji);
     event.dataTransfer.effectAllowed = 'move';
   };
 
   const handleStickerClick = (emoji: string) => {
+    if (isLocked) return;
     const rect = document.querySelector('.react-flow')?.getBoundingClientRect();
     const centerX = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
     const centerY = rect ? rect.top + rect.height / 2 : window.innerHeight / 2;
@@ -75,6 +88,7 @@ export function Sidebar() {
   };
 
   const handleBulkSubmit = () => {
+    if (isLocked) return;
     const lines = bulkText.split('\n').map(l => l.trim()).filter(l => l.length > 0);
     if (lines.length === 0) return;
 
@@ -223,7 +237,7 @@ export function Sidebar() {
                     hover:translate-x-0.5 relative
                   "
                   onDragStart={(event) => onDragStart(event, shape.type)}
-                  draggable
+                  draggable={!isLocked}
                 >
                   {/* Left accent bar */}
                   <div className={`absolute left-0 top-2 bottom-2 w-0.5 rounded-full ${shape.accentColor} opacity-0 group-hover:opacity-100 transition-opacity`} />
@@ -302,7 +316,7 @@ export function Sidebar() {
                 {stickers.map((st) => (
                   <button
                     key={st.emoji}
-                    draggable
+                    draggable={!isLocked}
                     onDragStart={(e) => onStickerDragStart(e, st.emoji)}
                     onClick={() => handleStickerClick(st.emoji)}
                     className="w-9 h-9 flex items-center justify-center text-lg rounded-md hover:bg-white dark:hover:bg-slate-800 hover:shadow-sm transition-all active:scale-90 cursor-grab border border-transparent hover:border-gray-200 dark:hover:border-gray-700"

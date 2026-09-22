@@ -24,14 +24,6 @@ export class ErrorBoundary extends Component<Props, State> {
     console.error('Uncaught error in NodeCraft:', error, errorInfo);
   }
 
-  // Auto-recover when the children change (e.g., user navigates / parents
-  // re-render with new props after a transient error).
-  public componentDidUpdate(prevProps: Props) {
-    if (this.state.hasError && prevProps.children !== this.props.children) {
-      this.setState({ hasError: false, error: null });
-    }
-  }
-
   private handleReset = () => {
     this.setState({ hasError: false, error: null });
   };

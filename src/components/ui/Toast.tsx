@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useRef, useEffect } from 'react';
 import { CheckCircle2, XCircle, Info, AlertTriangle, X } from 'lucide-react';
 
 export interface ToastItem {
@@ -41,11 +41,18 @@ export function Toast({ message, type, onClose }: ToastProps) {
   const [isExiting, setIsExiting] = useState(false);
   const config = toastConfig[type];
   const Icon = config.icon;
+  const timeoutRef = useRef<number | null>(null);
 
   const handleClose = () => {
     setIsExiting(true);
-    setTimeout(onClose, 300);
+    timeoutRef.current = window.setTimeout(onClose, 300);
   };
+
+  useEffect(() => {
+    return () => {
+      if (timeoutRef.current !== null) clearTimeout(timeoutRef.current);
+    };
+  }, []);
 
   return (
     <div

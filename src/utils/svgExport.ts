@@ -19,6 +19,61 @@ function escapeXml(str: string): string {
     .replace(/'/g, '&apos;');
 }
 
+function sanitizeColor(value: unknown, fallback: string): string {
+  if (typeof value !== 'string') return fallback;
+  const v = value.trim();
+  if (v === 'transparent') return v;
+  if (/^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/.test(v)) return v;
+  return fallback;
+}
+
+function sanitizeNumeric(value: unknown, fallback: number, min: number, max: number): number {
+  const n = typeof value === 'string' ? Number(value.trim()) : typeof value === 'number' ? value : NaN;
+  if (!Number.isFinite(n)) return fallback;
+  return Math.min(Math.max(n, min), max);
+}
+
+function sanitizeRotation(value: unknown): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return '';
+  const r = Math.max(-360, Math.min(360, value));
+  return String(r);
+}
+
+function sanitizeSvgPath(value: unknown): string {
+  if (typeof value !== 'string') return '';
+  const v = value.trim();
+  if (v.length > 5000) return '';
+  if (!/^[\sMLHVCSQTAZmlhvcsqtaz0-9.,eE\-/]+$/.test(v)) return '';
+  return escapeXml(v);
+}
+
+function sanitizeImageUrl(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  if (v.length > 500000) return null;
+  if (/^https:\/\//i.test(v)) return escapeXml(v);
+  if (/^http:\/\/localhost/i.test(v)) return escapeXml(v);
+  if (/^data:image\/(png|jpeg|jpg|gif|webp);base64,/i.test(v)) {
+    const b64 = v.split(',')[1] || '';
+    if (b64.length > 500000) return null;
+    if (b64 && !/^[A-Za-z0-9+/=\s]+$/.test(b64)) return null;
+    return escapeXml(v);
+  }
+  return null;
+}
+
+function sanitizeStrokeDasharray(value: unknown): string | null {
+  if (typeof value !== 'string') return null;
+  const v = value.trim();
+  if (v.length > 30) return null;
+  if (!/^[\d\s.,]+$/.test(v)) return null;
+  return escapeXml(v);
+}
+
+function sanitizeBackgroundColor(value: unknown, fallback: string): string {
+  return sanitizeColor(value, fallback);
+}
+
 // ---------- edge path calculation ----------
 
 /**
@@ -92,6 +147,15 @@ function getAbsolutePosition(node: Node, allNodes: Node[]): { x: number; y: numb
   return { x, y };
 }
 
+/** True when a node has usable geometry for export (finite pos + dims). */
+function isRenderable(node: Node, allNodes: Node[]): boolean {
+  const w = node.measured?.width ?? node.width ?? 150;
+  const h = node.measured?.height ?? node.height ?? 50;
+  if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0) return false;
+  const p = getAbsolutePosition(node, allNodes);
+  return Number.isFinite(p.x) && Number.isFinite(p.y);
+}
+
 // ---------- bounding box ----------
 
 function getNodeBounds(nodes: Node[]): { x: number; y: number; width: number; height: number } {
@@ -102,13 +166,17 @@ function getNodeBounds(nodes: Node[]): { x: number; y: number; width: number; he
   let minX = Infinity, minY = Infinity;
   let maxX = -Infinity, maxY = -Infinity;
   for (const node of nodes) {
-    const w = node.measured?.width || node.width || 150;
-    const h = node.measured?.height || node.height || 50;
+    if (!isRenderable(node, nodes)) continue;
+    const w = node.measured?.width ?? node.width ?? 150;
+    const h = node.measured?.height ?? node.height ?? 50;
     const p = getAbsolutePosition(node, nodes);
     minX = Math.min(minX, p.x);
     minY = Math.min(minY, p.y);
     maxX = Math.max(maxX, p.x + w);
     maxY = Math.max(maxY, p.y + h);
+  }
+  if (!Number.isFinite(minX) || !Number.isFinite(minY)) {
+    return { x: 0, y: 0, width: 800, height: 600 };
   }
   return { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
 }
@@ -123,40 +191,41 @@ function renderShape(
 ): string {
   const data = node.data as unknown as ShapeNodeData;
   const shapeType = data.shapeType || 'rectangle';
+  if (!isRenderable(node, allNodes)) return '';
   const p = getAbsolutePosition(node, allNodes);
   const x = p.x - offsetX;
   const y = p.y - offsetY;
   const w = node.measured?.width || node.width || 150;
   const h = node.measured?.height || node.height || 50;
-  const color = data.color || '#ffffff';
-  const borderColor = data.borderColor || '#94a3b8';
-  const borderWidth = data.borderWidth || 2;
+  const color = sanitizeColor(data.color, '#ffffff');
+  const borderColor = sanitizeColor(data.borderColor, '#94a3b8');
+  const borderWidth = sanitizeNumeric(data.borderWidth, 2, 0, 20);
   const imageUrl = data.imageUrl;
 
-  const hexId = color.replace('#', '');
-  const hasPreset = colorGradients[color];
+  const hexId = color.replace(/[^a-zA-Z0-9_-]/g, '');
+  const hasPreset = !!colorGradients[color as keyof typeof colorGradients];
   const fillValue = color === 'transparent'
     ? 'transparent'
-    : hasPreset ? `url(#grad-${hexId})` : color;
+    : hasPreset ? `url(#grad-${hexId})` : escapeXml(color);
   const cylFillValue = color === 'transparent'
     ? 'transparent'
-    : hasPreset ? `url(#cyl-grad-${hexId})` : color;
+    : hasPreset ? `url(#cyl-grad-${hexId})` : escapeXml(color);
   const cylTopFillValue = color === 'transparent'
     ? 'transparent'
-    : hasPreset ? `url(#cyl-top-grad-${hexId})` : color;
+    : hasPreset ? `url(#cyl-top-grad-${hexId})` : escapeXml(color);
 
   switch (shapeType) {
     case 'circle': {
       const cx = x + w / 2;
       const cy = y + h / 2;
       return `<ellipse cx="${cx}" cy="${cy}" rx="${w / 2}" ry="${h / 2}"
-          fill="${fillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" />`;
+          fill="${fillValue}" stroke="${escapeXml(borderColor)}" stroke-width="${borderWidth}" />`;
     }
 
     case 'diamond': {
       const pts = `${x + w / 2},${y} ${x + w},${y + h / 2} ${x + w / 2},${y + h} ${x},${y + h / 2}`;
       return `<polygon points="${pts}"
-          fill="${fillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" stroke-linejoin="round" />`;
+          fill="${fillValue}" stroke="${escapeXml(borderColor)}" stroke-width="${borderWidth}" stroke-linejoin="round" />`;
     }
 
     case 'cylinder': {
@@ -165,41 +234,45 @@ function renderShape(
       const cx = x + rx;
       const topCy = y + ry;
       const bottomCy = y + h - ry;
+      const safeBorder = escapeXml(borderColor);
       return `
         <path d="M ${x} ${topCy} L ${x} ${bottomCy} A ${rx} ${ry} 0 0 0 ${x + w} ${bottomCy} L ${x + w} ${topCy} A ${rx} ${ry} 0 0 0 ${x} ${topCy} Z"
-          fill="${cylFillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" />
+          fill="${cylFillValue}" stroke="${safeBorder}" stroke-width="${borderWidth}" />
         <ellipse cx="${cx}" cy="${topCy}" rx="${rx}" ry="${ry}"
-          fill="${cylTopFillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" />
+          fill="${cylTopFillValue}" stroke="${safeBorder}" stroke-width="${borderWidth}" />
         <path d="M ${x} ${y + h * 0.4} A ${rx} ${ry} 0 0 0 ${x + w} ${y + h * 0.4}"
-          fill="none" stroke="${borderColor}" stroke-width="${borderWidth}" stroke-opacity="0.4" />
+          fill="none" stroke="${safeBorder}" stroke-width="${borderWidth}" stroke-opacity="0.4" />
         <path d="M ${x} ${y + h * 0.7} A ${rx} ${ry} 0 0 0 ${x + w} ${y + h * 0.7}"
-          fill="none" stroke="${borderColor}" stroke-width="${borderWidth}" stroke-opacity="0.4" />`;
+          fill="none" stroke="${safeBorder}" stroke-width="${borderWidth}" stroke-opacity="0.4" />`;
     }
 
     case 'sticky': {
       const fs = 20;
+      const safeBorder = escapeXml(borderColor);
       const pts = `${x + fs},${y} ${x + w},${y} ${x + w},${y + h - fs} ${x + w - fs},${y + h - fs} ${x},${y + h} ${x},${y}`;
       return `
         <polygon points="${pts}"
-          fill="${fillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" stroke-linejoin="round" />
+          fill="${fillValue}" stroke="${safeBorder}" stroke-width="${borderWidth}" stroke-linejoin="round" />
         <polygon points="${x + fs},${y} ${x + fs + 10},${y} ${x + fs + 10},${y + 10}"
-          fill="${borderColor}" opacity="0.3" />`;
+          fill="${safeBorder}" opacity="0.3" />`;
     }
 
     case 'image': {
       const r = 8;
+      const safeBorder = escapeXml(borderColor);
       let svg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}"
-          fill="${fillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" />`;
+          fill="${fillValue}" stroke="${safeBorder}" stroke-width="${borderWidth}" />`;
 
-      if (imageUrl) {
+      const sanitizedUrl = sanitizeImageUrl(imageUrl);
+      if (sanitizedUrl) {
         // Use clipPath for rounded corners on image
-        const clipId = `clip-img-${node.id.replace(/[^a-zA-Z0-9]/g, '')}`;
+        const clipId = `clip-img-${node.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
         svg += `
-        <clipPath id="${clipId}">
+        <clipPath id="${escapeXml(clipId)}">
           <rect x="${x}" y="${y}" width="${w}" height="${h}" rx="${r}" />
         </clipPath>
-        <image href="${escapeXml(imageUrl)}" x="${x}" y="${y}" width="${w}" height="${h}"
-          preserveAspectRatio="xMidYMid slice" clip-path="url(#${clipId})" />`;
+        <image href="${sanitizedUrl}" xlink:href="${sanitizedUrl}" x="${x}" y="${y}" width="${w}" height="${h}"
+          preserveAspectRatio="xMidYMid slice" clip-path="url(#${escapeXml(clipId)})" />`;
       } else {
         // Placeholder icon for "Double-click to upload"
         const iconX = x + w / 2;
@@ -207,9 +280,9 @@ function renderShape(
         svg += `
         <g opacity="0.4">
           <rect x="${iconX - 14}" y="${iconY - 14}" width="28" height="28" rx="4"
-            fill="none" stroke="${borderColor}" stroke-width="1.5" />
+            fill="none" stroke="${safeBorder}" stroke-width="1.5" />
           <path d="M ${iconX - 6} ${iconY + 6} L ${iconX - 2} ${iconY} L ${iconX + 2} ${iconY + 4} L ${iconX + 6} ${iconY - 2}"
-            fill="none" stroke="${borderColor}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+            fill="none" stroke="${safeBorder}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
         </g>
         <text x="${iconX}" y="${iconY + 28}"
           text-anchor="middle" dominant-baseline="middle"
@@ -227,34 +300,63 @@ function renderShape(
       const emoji = data.stickerEmoji || '⭐';
       const cx = x + w / 2;
       const cy = y + h / 2;
-      const rot = data.rotation ? ` transform="rotate(${data.rotation} ${cx} ${cy})"` : '';
-      return `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central"${rot} font-size="${Math.min(w, h) * 0.7}" font-family="system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif">${escapeXml(emoji)}</text>`;
+      const rotVal = sanitizeRotation(data.rotation);
+      const rot = rotVal ? ` transform="rotate(${escapeXml(rotVal)} ${cx} ${cy})"` : '';
+      const fontSize = sanitizeNumeric(Math.min(w, h) * 0.7, 40, 8, 200);
+      return `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central"${rot} font-size="${fontSize}" font-family="system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif">${escapeXml(emoji)}</text>`;
     }
 
     case 'frame': {
       // Dashed border frame with a title tab in the top-left.
-      const title = data.label || '';
-      const stroke = data.borderColor || '#94a3b8';
-      const bw = data.borderWidth || 4;
-      let svg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12" ry="12" fill="none" stroke="${stroke}" stroke-width="${bw}" stroke-dasharray="8 4" />`;
+      const title = typeof data.label === 'string' ? data.label.slice(0, 120) : '';
+      const stroke = sanitizeColor(data.borderColor, '#94a3b8');
+      const bw = sanitizeNumeric(data.borderWidth, 4, 0, 20);
+      const safeStroke = escapeXml(stroke);
+      let svg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="12" ry="12" fill="none" stroke="${safeStroke}" stroke-width="${bw}" stroke-dasharray="8 4" />`;
       if (title) {
-        svg += `<rect x="${x}" y="${y}" width="${Math.min(120, title.length * 9 + 16)}" height="22" rx="6" fill="${stroke}" />`;
-        svg += `<text x="${x + 8}" y="${y + 15}" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#ffffff">${escapeXml(title)}</text>`;
+        const safeTitle = escapeXml(title);
+        const titleWidth = Math.min(200, Math.min(120, safeTitle.length * 9 + 16));
+        svg += `<rect x="${x}" y="${y}" width="${titleWidth}" height="22" rx="6" fill="${safeStroke}" />`;
+        svg += `<text x="${x + 8}" y="${y + 15}" font-family="system-ui, -apple-system, sans-serif" font-size="13" font-weight="700" fill="#ffffff">${safeTitle}</text>`;
       }
       return svg;
     }
 
     case 'card': {
-      // Jira-style task card: rounded rect with colored left border.
+      // Jira-style task card: rounded rect with colored left border, header status, and footer info
       const statusColors: Record<string, string> = {
         todo: '#ef4444',
         'in-progress': '#f59e0b',
         done: '#10b981',
       };
-      const accent = statusColors[data.status || 'todo'] || '#cbd5e1';
-      const fill = data.color || '#ffffff';
-      let svg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" ry="8" fill="${fill}" stroke="#e2e8f0" stroke-width="1" />`;
-      svg += `<rect x="${x}" y="${y}" width="5" height="${h}" fill="${accent}" />`;
+      const statusLabels: Record<string, string> = {
+        todo: 'TO DO',
+        'in-progress': 'IN PROGRESS',
+        done: 'DONE',
+      };
+      const statusKey = typeof data.status === 'string' && statusColors[data.status] ? data.status : 'todo';
+      const accent = statusColors[statusKey] || '#cbd5e1';
+      const statusText = statusLabels[statusKey] || 'TO DO';
+      const fill = sanitizeColor(data.color, '#ffffff');
+      
+      let svg = `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" ry="8" fill="${escapeXml(fill)}" stroke="#e2e8f0" stroke-width="1" />`;
+      svg += `<rect x="${x}" y="${y}" width="5" height="${h}" fill="${escapeXml(accent)}" />`;
+      
+      // Header: Status badge
+      const badgeWidth = Math.max(45, statusText.length * 6 + 10);
+      svg += `<rect x="${x + w - badgeWidth - 8}" y="${y + 6}" width="${badgeWidth}" height="14" rx="3" fill="${escapeXml(accent)}" fill-opacity="0.15" stroke="${escapeXml(accent)}" stroke-width="0.5" />`;
+      svg += `<text x="${x + w - badgeWidth / 2 - 8}" y="${y + 13}" text-anchor="middle" dominant-baseline="middle" font-family="system-ui, -apple-system, sans-serif" font-size="8" font-weight="700" fill="${escapeXml(accent)}">${escapeXml(statusText)}</text>`;
+      
+      // Divider
+      svg += `<line x1="${x + 8}" y1="${y + h - 22}" x2="${x + w - 8}" y2="${y + h - 22}" stroke="#f1f5f9" stroke-width="1" />`;
+      
+      // Footer metadata
+      const assignee = typeof data.assignee === 'string' ? data.assignee.slice(0, 80) : 'Unassigned';
+      svg += `<text x="${x + 10}" y="${y + h - 10}" dominant-baseline="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#64748b">👤 ${escapeXml(assignee)}</text>`;
+      if (typeof data.dueDate === 'string' && data.dueDate) {
+        const due = data.dueDate.slice(0, 30);
+        svg += `<text x="${x + w - 10}" y="${y + h - 10}" text-anchor="end" dominant-baseline="middle" font-family="system-ui, -apple-system, sans-serif" font-size="9" fill="#64748b">📅 ${escapeXml(due)}</text>`;
+      }
       return svg;
     }
 
@@ -263,24 +365,25 @@ function renderShape(
       const cx = x + w / 2;
       const cy = y + h / 2;
       const r = Math.min(w, h) / 2;
-      const gradId = `portal-${node.id.replace(/[^a-zA-Z0-9]/g, '')}`;
-      return `<defs><radialGradient id="${gradId}" cx="50%" cy="50%" r="50%">
+      const gradId = `portal-${node.id.replace(/[^a-zA-Z0-9_-]/g, '')}`;
+      return `<defs><radialGradient id="${escapeXml(gradId)}" cx="50%" cy="50%" r="50%">
           <stop offset="0%" stop-color="#3b82f6" />
           <stop offset="50%" stop-color="#1e3a8a" />
           <stop offset="100%" stop-color="#0f172a" />
         </radialGradient></defs>
-        <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${gradId})" stroke="#60a5fa" stroke-width="2" />`;
+        <circle cx="${cx}" cy="${cy}" r="${r}" fill="url(#${escapeXml(gradId)})" stroke="#60a5fa" stroke-width="2" />`;
     }
 
     case 'drawing': {
       // Freehand pen sketch — render the stored SVG path inside a translated box.
-      const path = data.svgPath || '';
-      return `<g transform="translate(${x} ${y})"><path d="${path}" fill="none" stroke="${data.color || '#3b82f6'}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" /></g>`;
+      const path = sanitizeSvgPath(data.svgPath);
+      const colorSafe = sanitizeColor(data.color, '#3b82f6');
+      return `<g transform="translate(${x} ${y})"><path d="${path}" fill="none" stroke="${escapeXml(colorSafe)}" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" /></g>`;
     }
 
     default: // rectangle
       return `<rect x="${x}" y="${y}" width="${w}" height="${h}" rx="8" ry="8"
-          fill="${fillValue}" stroke="${borderColor}" stroke-width="${borderWidth}" />`;
+          fill="${fillValue}" stroke="${escapeXml(borderColor)}" stroke-width="${borderWidth}" />`;
   }
 }
 
@@ -294,6 +397,7 @@ function renderText(
 ): string {
   const data = node.data as unknown as ShapeNodeData;
   const shapeType = data.shapeType || 'rectangle';
+  if (!isRenderable(node, allNodes)) return '';
   const label = (shapeType === 'sticker' ? data.stickerEmoji : data.label) || '';
   // Mirror the ShapeNode auto-size logic for stickies so exports match.
   const stickyAutoFontSize = (text: string) => {
@@ -303,20 +407,21 @@ function renderText(
     if (len < 120) return 11;
     return 9;
   };
-  const fontSize = shapeType === 'sticky' ? (data.fontSize || stickyAutoFontSize(label)) : (data.fontSize || 14);
+  const rawFontSize = shapeType === 'sticky' ? (data.fontSize || stickyAutoFontSize(label as string)) : (data.fontSize || 14);
+  const fontSize = sanitizeNumeric(rawFontSize, 14, 6, 72);
   const align = data.align || 'center';
-  const textColor = data.textColor || '#1e293b';
+  const textColor = sanitizeColor(data.textColor, '#1e293b');
   const bold = data.bold === true;
   const italic = data.italic === true;
   const fontFamily = data.fontFamily || 'sans';
 
-  const fontMap = {
+  const fontMap: Record<string, string> = {
     sans: 'system-ui, -apple-system, sans-serif',
     serif: 'Georgia, Cambria, "Times New Roman", Times, serif',
     mono: 'ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace',
     handwriting: '"Kalam", "Caveat", cursive',
   };
-  const fontFam = fontMap[fontFamily] || fontMap.sans;
+  const fontFam = fontMap[typeof fontFamily === 'string' ? fontFamily : 'sans'] || fontMap.sans;
   // Use absolute position for grouped nodes (mirrors renderShape).
   const absPos = (n: Node): { x: number; y: number } => {
     let x = n.position.x;
@@ -347,6 +452,7 @@ function renderText(
 
   if (shapeType === 'image') {
     if (!label) return '';
+    const caption = String(label).slice(0, 120);
     const captionH = 24;
     const captionY = y + h - captionH;
     const captionTextY = captionY + captionH / 2;
@@ -357,8 +463,8 @@ function renderText(
         fill="#0f172a" fill-opacity="0.6" rx="6" ry="6" />
       <text x="${textX}" y="${captionTextY}"
         text-anchor="middle" dominant-baseline="middle"
-        font-family="${fontFam}" font-size="11"
-        fill="#ffffff" font-weight="${fontWeight}" font-style="${fontStyle}">${escapeXml(label)}</text>`;
+        font-family="${escapeXml(fontFam)}" font-size="11"
+        fill="#ffffff" font-weight="${fontWeight}" font-style="${fontStyle}">${escapeXml(caption)}</text>`;
   }
 
   // Skip text rendering for sticker (emoji is in renderShape), drawing, frame title (already in shape).
@@ -366,14 +472,16 @@ function renderText(
 
   if (!label) return '';
 
-  const lines = label.split('\n');
+  const labelStr = String(label).slice(0, 2000);
+  const lines = labelStr.split('\n').slice(0, 50);
   const lineSpacing = fontSize * 1.2;
   const textCenterY = shapeType === 'cylinder' ? textY + (h * 0.08) : textY;
   const startY = textCenterY - ((lines.length - 1) * lineSpacing) / 2;
 
   let tspans = '';
   lines.forEach((line, i) => {
-    tspans += `<tspan x="${textX + dx}" dy="${i === 0 ? 0 : lineSpacing}" text-anchor="${textAnchor}">${escapeXml(line)}</tspan>`;
+    const safeLine = escapeXml(line.slice(0, 500));
+    tspans += `<tspan x="${textX + dx}" dy="${i === 0 ? 0 : lineSpacing}" text-anchor="${textAnchor}">${safeLine}</tspan>`;
   });
 
   const fontWeight = bold ? '700' : '400';
@@ -382,8 +490,8 @@ function renderText(
   return `
     <text x="${textX + dx}" y="${startY}"
       dominant-baseline="middle"
-      font-family="${fontFam}" font-size="${fontSize}"
-      fill="${textColor}" font-weight="${fontWeight}" font-style="${fontStyle}">${tspans}</text>`;
+      font-family="${escapeXml(fontFam)}" font-size="${fontSize}"
+      fill="${escapeXml(textColor)}" font-weight="${fontWeight}" font-style="${fontStyle}">${tspans}</text>`;
 }
 
 // ---------- main export ----------
@@ -393,11 +501,15 @@ export function exportToSVG(
   edges: Edge[],
   options: SVGExportOptions = {}
 ): string {
-  const { padding = 50, includeBackground = true, backgroundColor = '#f8fafc' } = options;
+  const { padding = 50, includeBackground = true, backgroundColor: rawBg = '#f8fafc' } = options;
+  const backgroundColor = sanitizeBackgroundColor(rawBg, '#f8fafc');
 
   const bounds = getNodeBounds(nodes);
-  const svgWidth = bounds.width + padding * 2;
-  const svgHeight = bounds.height + padding * 2;
+  // Guard against non-finite/absurd values but allow large real diagrams
+  const safeW = Number.isFinite(bounds.width + padding * 2) ? bounds.width + padding * 2 : 800;
+  const safeH = Number.isFinite(bounds.height + padding * 2) ? bounds.height + padding * 2 : 600;
+  const svgWidth = Math.min(Math.max(safeW, 100), 100000);
+  const svgHeight = Math.min(Math.max(safeH, 100), 100000);
 
   const offsetX = bounds.x - padding;
   const offsetY = bounds.y - padding;
@@ -407,25 +519,29 @@ export function exportToSVG(
 
   // Color gradient definitions
   Object.entries(colorGradients).forEach(([hex, grad]) => {
-    const hexId = hex.replace('#', '');
+    const hexId = hex.replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeHexId = escapeXml(hexId);
+    const safeGrad0 = escapeXml(String(grad[0]));
+    const safeGrad1 = escapeXml(String(grad[1]));
     defs += `
-    <linearGradient id="grad-${hexId}" x1="0%" y1="0%" x2="100%" y2="100%">
-      <stop offset="0%" stop-color="${grad[0]}" />
-      <stop offset="100%" stop-color="${grad[1]}" />
+    <linearGradient id="grad-${safeHexId}" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="${safeGrad0}" />
+      <stop offset="100%" stop-color="${safeGrad1}" />
     </linearGradient>
-    <linearGradient id="cyl-grad-${hexId}" x1="0%" y1="0%" x2="0%" y2="100%">
-      <stop offset="0%" stop-color="${grad[0]}" />
-      <stop offset="100%" stop-color="${grad[1] === '#ffffff' ? '#e2e8f0' : grad[1]}" />
+    <linearGradient id="cyl-grad-${safeHexId}" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="${safeGrad0}" />
+      <stop offset="100%" stop-color="${safeGrad1 === '#ffffff' ? '#e2e8f0' : safeGrad1}" />
     </linearGradient>
-    <linearGradient id="cyl-top-grad-${hexId}" x1="0%" y1="0%" x2="0%" y2="100%">
+    <linearGradient id="cyl-top-grad-${safeHexId}" x1="0%" y1="0%" x2="0%" y2="100%">
       <stop offset="0%" stop-color="#ffffff" stop-opacity="0.6" />
-      <stop offset="100%" stop-color="${grad[0]}" />
+      <stop offset="100%" stop-color="${safeGrad0}" />
     </linearGradient>`;
   });
 
-  // Drop shadow filters & Dash flow animation keyframes
+  // Drop shadow filters & Dash flow animation keyframes & web fonts
   defs += `
     <style>
+      @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;700&amp;family=Kalam:wght@400;700&amp;display=swap');
       @keyframes edge-flow {
         from {
           stroke-dashoffset: 20;
@@ -447,16 +563,18 @@ export function exportToSVG(
   const markerColors = new Set<string>();
   for (const edge of edges) {
     const style = edge.style as { stroke?: string } | undefined;
-    markerColors.add(style?.stroke || '#94a3b8');
+    const raw = style?.stroke || '#94a3b8';
+    markerColors.add(sanitizeColor(raw, '#94a3b8'));
   }
   if (markerColors.size === 0) markerColors.add('#94a3b8');
 
   for (const color of markerColors) {
-    const markerId = `arrow-${color.replace('#', '')}`;
+    const safeColor = escapeXml(sanitizeColor(color, '#94a3b8'));
+    const markerId = `arrow-${safeColor.replace(/[^a-zA-Z0-9]/g, '')}`;
     defs += `
-    <marker id="${markerId}" viewBox="0 0 10 10" refX="10" refY="5"
+    <marker id="${escapeXml(markerId)}" viewBox="0 0 10 10" refX="10" refY="5"
       markerWidth="8" markerHeight="8" orient="auto-start-reverse">
-      <path d="M 0 0 L 10 5 L 0 10 z" fill="${color}" />
+      <path d="M 0 0 L 10 5 L 0 10 z" fill="${safeColor}" />
     </marker>`;
   }
 
@@ -470,7 +588,7 @@ export function exportToSVG(
   </defs>`;
 
   if (includeBackground) {
-    svg += `\n  <rect width="${svgWidth}" height="${svgHeight}" fill="${backgroundColor}" />`;
+    svg += `\n  <rect width="${svgWidth}" height="${svgHeight}" fill="${escapeXml(backgroundColor)}" />`;
   }
 
   svg += '\n  <g>';
@@ -480,18 +598,20 @@ export function exportToSVG(
     const sourceNode = nodes.find((n) => n.id === edge.source);
     const targetNode = nodes.find((n) => n.id === edge.target);
     if (!sourceNode || !targetNode) continue;
+    if (!isRenderable(sourceNode, nodes) || !isRenderable(targetNode, nodes)) continue;
 
     const sw = sourceNode.measured?.width || sourceNode.width || 150;
     const sh = sourceNode.measured?.height || sourceNode.height || 50;
     const tw = targetNode.measured?.width || targetNode.width || 150;
     const th = targetNode.measured?.height || targetNode.height || 50;
-    const edgeType = edge.type || 'default';
-    const style = edge.style as { strokeWidth?: number; stroke?: string; strokeDasharray?: string } | undefined;
-    const strokeWidth = style?.strokeWidth || 2;
-    const stroke = style?.stroke || '#94a3b8';
-    const strokeDasharray = style?.strokeDasharray;
-    const dashAttr = strokeDasharray ? `stroke-dasharray="${strokeDasharray}"` : '';
-    const markerId = `arrow-${stroke.replace('#', '')}`;
+    const edgeType = typeof edge.type === 'string' ? edge.type : 'default';
+    const style = edge.style as { strokeWidth?: unknown; stroke?: unknown; strokeDasharray?: unknown } | undefined;
+    const strokeWidth = sanitizeNumeric(style?.strokeWidth, 2, 0, 20);
+    const stroke = sanitizeColor(style?.stroke, '#94a3b8');
+    const dashRaw = sanitizeStrokeDasharray(style?.strokeDasharray);
+    const dashAttr = dashRaw ? `stroke-dasharray="${dashRaw}"` : '';
+    const safeStroke = escapeXml(stroke);
+    const markerId = `arrow-${safeStroke.replace(/[^a-zA-Z0-9]/g, '')}`;
 
     // IMPORTANT: compute path in *offset* coordinate space so it matches node rendering
     const sourceAbs = getAbsolutePosition(sourceNode, nodes);
@@ -509,18 +629,18 @@ export function exportToSVG(
 
     const hasMarkerStart = !!edge.markerStart;
     const hasMarkerEnd = !!edge.markerEnd;
-    const markerStartAttr = hasMarkerStart ? `marker-start="url(#${markerId})"` : '';
-    const markerEndAttr = hasMarkerEnd ? `marker-end="url(#${markerId})"` : '';
+    const markerStartAttr = hasMarkerStart ? `marker-start="url(#${escapeXml(markerId)})"` : '';
+    const markerEndAttr = hasMarkerEnd ? `marker-end="url(#${escapeXml(markerId)})"` : '';
 
     svg += `
-    <path d="${pathD}"
-      fill="none" stroke="${stroke}" stroke-width="${strokeWidth}" ${dashAttr}
+    <path d="${escapeXml(pathD)}"
+      fill="none" stroke="${safeStroke}" stroke-width="${strokeWidth}" ${dashAttr}
       ${markerStartAttr} ${markerEndAttr} />`;
 
     if (edge.animated) {
       svg += `
-    <path d="${pathD}"
-      fill="none" stroke="${stroke}" stroke-width="${strokeWidth}"
+    <path d="${escapeXml(pathD)}"
+      fill="none" stroke="${safeStroke}" stroke-width="${strokeWidth}"
       class="animated-flow" />`;
     }
 
@@ -536,14 +656,15 @@ export function exportToSVG(
 
       const lx = (src.x + tgt.x) / 2;
       const ly = (src.y + tgt.y) / 2;
-      const labelLength = edge.label.length;
-      const rectWidth = Math.max(60, labelLength * 6 + 10);
+      const safeLabel = escapeXml(String(edge.label).slice(0, 200));
+      const labelLength = safeLabel.length;
+      const rectWidth = Math.max(60, Math.min(300, labelLength * 6 + 10));
 
       svg += `
       <g>
-        <rect x="${lx - rectWidth / 2}" y="${ly - 9}" width="${rectWidth}" height="18" rx="4" fill="${backgroundColor}" fill-opacity="0.95" stroke="${stroke}" stroke-width="0.5" />
+        <rect x="${lx - rectWidth / 2}" y="${ly - 9}" width="${rectWidth}" height="18" rx="4" fill="${escapeXml(backgroundColor)}" fill-opacity="0.95" stroke="${safeStroke}" stroke-width="0.5" />
         <text x="${lx}" y="${ly}" text-anchor="middle" dominant-baseline="middle"
-          font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="${stroke}">${escapeXml(edge.label)}</text>
+          font-family="system-ui, -apple-system, sans-serif" font-size="9" font-weight="600" fill="${safeStroke}">${safeLabel}</text>
       </g>`;
     }
   }
@@ -574,5 +695,6 @@ export function downloadSVG(svgContent: string, filename: string = 'diagram.svg'
   document.body.appendChild(link);
   link.click();
   document.body.removeChild(link);
-  URL.revokeObjectURL(url);
+  // Revoke async — immediate revoke can abort the download in Firefox/Safari
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

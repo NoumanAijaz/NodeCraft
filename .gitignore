@@ -26,6 +26,7 @@ logs/
 npm-debug.log*
 yarn-debug.log*
 pnpm-debug.log*
+lint_output.txt
 
 # Editor & OS junk
 .vscode/*

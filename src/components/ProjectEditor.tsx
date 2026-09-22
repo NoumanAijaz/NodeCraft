@@ -5,7 +5,6 @@ import { api } from '../utils/api';
 import { TopNav } from './layout/TopNav';
 import { Sidebar } from './layout/Sidebar';
 import { Canvas } from './canvas/Canvas';
-import { ToastProvider } from '../context/ToastContext';
 
 export const ProjectEditor: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -41,6 +40,31 @@ export const ProjectEditor: React.FC = () => {
     fetchProject();
   }, [id, loadProject, setProjectDetails]);
 
+  // Warn user before closing tab if there are unsaved changes (Chrome requires returnValue)
+  useEffect(() => {
+    const handleBeforeUnload = (e: BeforeUnloadEvent) => {
+      if (!id) return;
+      const state = useDiagramStore.getState();
+      // If we have a saved snapshot, compare directly; otherwise fall back to default-node check
+      if (state.lastSavedSnapshot) {
+        const current = JSON.stringify({ nodes: state.nodes, edges: state.edges });
+        if (current === state.lastSavedSnapshot) return;
+      } else {
+        const isDefaultSingleNode =
+          state.nodes.length === 0 ||
+          (state.nodes.length === 1 &&
+            (state.nodes[0].data as { label?: string })?.label === 'Start Here' &&
+            state.edges.length === 0);
+        if (isDefaultSingleNode) return;
+      }
+      e.preventDefault();
+      e.returnValue = '';
+    };
+
+    window.addEventListener('beforeunload', handleBeforeUnload);
+    return () => window.removeEventListener('beforeunload', handleBeforeUnload);
+  }, [id]);
+
   if (loading) {
     return (
       <div className="min-h-screen bg-slate-950 text-slate-100 flex flex-col items-center justify-center font-sans">
@@ -69,15 +93,13 @@ export const ProjectEditor: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-gray-100 overflow-hidden">
-      <ToastProvider>
-        {!presentationMode && <TopNav />}
-        <div className="flex-1 flex min-h-0 relative">
-          {!presentationMode && <Sidebar />}
-          <main className="flex-1 relative h-full">
-            <Canvas />
-          </main>
-        </div>
-      </ToastProvider>
+      {!presentationMode && <TopNav />}
+      <div className="flex-1 flex min-h-0 relative">
+        {!presentationMode && <Sidebar />}
+        <main className="flex-1 relative h-full">
+          <Canvas />
+        </main>
+      </div>
     </div>
   );
 };

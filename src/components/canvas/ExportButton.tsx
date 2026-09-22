@@ -1,16 +1,27 @@
-import { Panel, useReactFlow, getNodesBounds, getViewportForBounds } from '@xyflow/react';
-import { toPng } from 'html-to-image';
+import { Panel } from '@xyflow/react';
 import { Download, Code, FileText } from 'lucide-react';
 import { exportToSVG, downloadSVG } from '../../utils/svgExport';
+import { exportNodesToPng, downloadDataUrl } from '../../utils/pngExport';
 import { useDiagramStore } from '../../store/useDiagramStore';
+import { useToast } from '../../context/ToastContext';
 
 export function ExportButton() {
-  const { getNodes } = useReactFlow();
+  const { showToast } = useToast();
+
+  const getExportFilename = (ext: string) => {
+    const { projectName, fileName } = useDiagramStore.getState();
+    const name = (projectName || fileName || 'nodecraft-diagram').replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 100) || 'nodecraft-diagram';
+    return `${name}.${ext}`;
+  };
 
   const handleSVGExport = async () => {
     try {
-      const { nodes, edges, theme } = useDiagramStore.getState();
-      const backgroundColor = theme === 'dark' ? '#0f172a' : '#f8fafc';
+      const { nodes, edges, theme, canvasColor } = useDiagramStore.getState();
+      if (nodes.length === 0) {
+        showToast('No content to export', 'warning');
+        return;
+      }
+      const backgroundColor = canvasColor || (theme === 'dark' ? '#0f172a' : '#f8fafc');
       
       const svgContent = exportToSVG(nodes, edges, { 
         padding: 50, 
@@ -18,62 +29,46 @@ export function ExportButton() {
         backgroundColor 
       });
       
-      downloadSVG(svgContent, 'nodecraft-diagram.svg');
+      downloadSVG(svgContent, getExportFilename('svg'));
+      showToast('Diagram exported as SVG', 'success');
     } catch (error) {
       console.error('Error exporting SVG:', error);
+      showToast('Failed to export SVG', 'error');
     }
   };
 
   const handlePNGExport = async () => {
     try {
-      const nodes = getNodes();
-      if (nodes.length === 0) return; // empty-canvas guard
-      const nodesBounds = getNodesBounds(nodes);
-      const imageWidth = nodesBounds.width + 100;
-      const imageHeight = nodesBounds.height + 100;
-
-      const viewport = getViewportForBounds(
-        nodesBounds,
-        imageWidth,
-        imageHeight,
-        0.5,
-        2,
-        0
-      );
-
-      const viewportElement = document.querySelector('.react-flow__viewport') as HTMLElement;
-      
-      if (viewportElement) {
-        // Exclude React Flow's UI chrome (minimap, controls) from the export —
-        // otherwise they appear as opaque rectangles in the saved PNG.
-        const filter = (node: HTMLElement) => {
-          const exclusionClasses = ['react-flow__minimap', 'react-flow__controls'];
-          return !exclusionClasses.some((className) => node.classList?.contains(className));
-        };
-
-        const { theme } = useDiagramStore.getState();
-        const options = {
-          filter,
-          backgroundColor: theme === 'dark' ? '#0f172a' : '#f8fafc',
-          width: imageWidth,
-          height: imageHeight,
-          style: {
-            width: `${imageWidth}px`,
-            height: `${imageHeight}px`,
-            transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
-          },
-        };
-
-        const dataUrl = await toPng(viewportElement, options);
-        const link = document.createElement('a');
-        link.download = 'nodecraft-diagram.png';
-        link.href = dataUrl;
-        document.body.appendChild(link);
-        link.click();
-        document.body.removeChild(link);
+      const nodes = useDiagramStore.getState().nodes;
+      if (nodes.length === 0) {
+        showToast('No content to export', 'warning');
+        return;
       }
+
+      const { theme, canvasColor } = useDiagramStore.getState();
+      const backgroundColor = canvasColor || (theme === 'dark' ? '#0f172a' : '#f8fafc');
+
+      const result = await exportNodesToPng(nodes, { backgroundColor });
+      if (!result.ok) {
+        if (result.reason === 'no-viewport') {
+          showToast('Canvas not ready — try again', 'warning');
+        } else {
+          console.error('Error exporting PNG:', result.error);
+          showToast('Failed to export PNG', 'error');
+        }
+        return;
+      }
+
+      downloadDataUrl(result.dataUrl, getExportFilename('png'));
+      showToast(
+        result.pixelRatio < 1
+          ? 'Exported PNG (downscaled to fit large diagram)'
+          : 'Diagram exported as PNG',
+        'success'
+      );
     } catch (error) {
       console.error('Error exporting PNG:', error);
+      showToast('Failed to export PNG', 'error');
     }
   };
 
@@ -96,7 +91,10 @@ export function ExportButton() {
         SVG
       </button>
       <button 
-        onClick={() => setTimeout(() => window.print(), 350)}
+        onClick={() => {
+          showToast('Preparing print layout...', 'info');
+          setTimeout(() => window.print(), 350);
+        }}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300 text-sm font-medium transition-colors"
         title="Export as PDF / Print diagram"
       >
@@ -106,8 +104,6 @@ export function ExportButton() {
       <button 
         onClick={() => {
           try {
-            // Include the same metadata as TopNav's handleExportJSON so the
-            // exported file can be fully restored on import.
             const state = useDiagramStore.getState();
             const projectData = {
               version: '1.0.0',
@@ -125,13 +121,15 @@ export function ExportButton() {
             const url = URL.createObjectURL(blob);
             const link = document.createElement('a');
             link.href = url;
-            link.download = 'nodecraft-project.json';
+            link.download = getExportFilename('json');
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
-            URL.revokeObjectURL(url);
+            setTimeout(() => URL.revokeObjectURL(url), 1000);
+            showToast('Project exported as JSON', 'success');
           } catch (e) {
             console.error('Failed to export JSON:', e);
+            showToast('Failed to export JSON', 'error');
           }
         }}
         className="flex items-center gap-1.5 px-3 py-1.5 rounded hover:bg-gray-100 dark:hover:bg-slate-700 text-gray-700 dark:text-gray-300 text-sm font-medium transition-colors"

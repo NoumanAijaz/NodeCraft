@@ -92,7 +92,7 @@ export function TimerWidget() {
     setIsFinished(false);
     if (audioRef.current) {
       audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+      try { audioRef.current.currentTime = 0; } catch { /* audio not loaded yet */ }
     }
   };
 

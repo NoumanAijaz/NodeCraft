@@ -58,6 +58,7 @@ export function ShortcutsModal({ isOpen, onClose }: ShortcutsModalProps) {
         { key: 'fit-view', description: 'Fit all nodes in view', shortcut: 'F' },
         { key: 'toggle-grid', description: 'Toggle snap to grid', shortcut: 'G' },
         { key: 'help', description: 'Open this shortcuts menu', shortcut: '?' },
+        { key: 'palette', description: 'Open command palette (search & run anything)', shortcut: `${modKey} + K` },
       ],
     },
   ];

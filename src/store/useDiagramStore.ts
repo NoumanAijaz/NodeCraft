@@ -22,16 +22,24 @@ import { temporal } from 'zundo';
 /**
  * Deep-clone a node's `data` payload so duplicate/pasted nodes don't share
  * array/object references (tags, reactions, ideaOrbits) with the original.
- * Falls back to a shallow clone if structuredClone is unavailable.
  */
 function deepCloneNodeData(data: unknown): ShapeNodeData {
   if (typeof structuredClone === 'function') {
-    return structuredClone(data) as ShapeNodeData;
+    try {
+      return structuredClone(data) as ShapeNodeData;
+    } catch {}
   }
   try {
     return JSON.parse(JSON.stringify(data)) as ShapeNodeData;
   } catch {
-    return { ...(data as ShapeNodeData) };
+    // Fallback: manual deep clone of known mutable fields to avoid shared refs
+    const src = data as ShapeNodeData;
+    return {
+      ...(src as object),
+      tags: src.tags ? [...src.tags] : undefined,
+      reactions: src.reactions ? { ...src.reactions } : undefined,
+      ideaOrbits: src.ideaOrbits ? [...src.ideaOrbits] : undefined,
+    } as ShapeNodeData;
   }
 }
 
@@ -125,6 +133,8 @@ interface DiagramStore {
   moveToPortal: (nodeIds: string[], portalId: string | null) => void;
   isLocked: boolean;
   setIsLocked: (locked: boolean) => void;
+  lastSavedSnapshot: string | null;
+  markSaved: (precomputedSnapshot?: string) => void;
 }
 
 let shakeTimeoutId: ReturnType<typeof setTimeout> | null = null;
@@ -155,6 +165,15 @@ export const useDiagramStore = create<DiagramStore>()(
       activeCanvasId: null,
       isAnimatingLayout: false,
       isLocked: false,
+      lastSavedSnapshot: null,
+      markSaved: (precomputedSnapshot?: string) => {
+        if (precomputedSnapshot !== undefined) {
+          set({ lastSavedSnapshot: precomputedSnapshot });
+          return;
+        }
+        const { nodes, edges } = get();
+        set({ lastSavedSnapshot: JSON.stringify({ nodes, edges }) });
+      },
       setZoom: (zoom) => set({ zoom }),
       setIsLocked: (locked) => set({ isLocked: locked }),
       
@@ -237,6 +256,7 @@ export const useDiagramStore = create<DiagramStore>()(
       },
       
       addNode: (shapeType: ShapeType, position: { x: number; y: number }, dataOverrides?: Partial<ShapeNodeData> & { width?: number; height?: number }) => {
+        if (get().isLocked) return;
         const { width: defaultW, height: defaultH } = getDefaultNodeDimensions(shapeType);
         const overrideWidth = dataOverrides?.width;
         const overrideHeight = dataOverrides?.height;
@@ -339,6 +359,7 @@ export const useDiagramStore = create<DiagramStore>()(
       },
 
       addChildNode: (parentId: string) => {
+        if (get().isLocked) return;
         const { nodes, edges } = get();
         const parentNode = nodes.find((n) => n.id === parentId);
         if (!parentNode) return;
@@ -381,6 +402,7 @@ export const useDiagramStore = create<DiagramStore>()(
       },
 
       addSiblingNode: (nodeId: string) => {
+        if (get().isLocked) return;
         const { nodes, edges } = get();
         const node = nodes.find((n) => n.id === nodeId);
         if (!node) return;
@@ -439,6 +461,7 @@ export const useDiagramStore = create<DiagramStore>()(
           isAnimatingLayout: false,
           zoom: 1,
           boardNotes: '',
+          lastSavedSnapshot: null,
         });
         useDiagramStore.temporal.getState().clear();
       },
@@ -627,10 +650,11 @@ export const useDiagramStore = create<DiagramStore>()(
         const { nodes } = get();
         const selectedNodes = nodes.filter(n => n.selected);
         if (selectedNodes.length < 2) return;
+        if (selectedNodes.some(n => !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y))) return;
 
         const getDims = (n: Node) => ({
-          w: n.measured?.width || n.width || 150,
-          h: n.measured?.height || n.height || 50
+          w: n.measured?.width ?? n.width ?? 150,
+          h: n.measured?.height ?? n.height ?? 50
         });
 
         const updatedNodes = nodes.map(n => {
@@ -671,23 +695,31 @@ export const useDiagramStore = create<DiagramStore>()(
         // Allow grouping any selected nodes
         const selectedNodes = nodes.filter(n => n.selected);
         if (selectedNodes.length < 2) return;
+        if (selectedNodes.some(n => !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y))) return;
 
         const padding = 20;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
 
         selectedNodes.forEach(n => {
-          const w = n.measured?.width || n.width || 150;
-          const h = n.measured?.height || n.height || 50;
+          const w = n.measured?.width ?? n.width ?? 150;
+          const h = n.measured?.height ?? n.height ?? 50;
+          if (!Number.isFinite(w) || !Number.isFinite(h)) return;
           const absPos = getAbsolutePosition(n, nodes);
+          if (!Number.isFinite(absPos.x) || !Number.isFinite(absPos.y)) return;
           if (absPos.x < minX) minX = absPos.x;
           if (absPos.y < minY) minY = absPos.y;
           if (absPos.x + w > maxX) maxX = absPos.x + w;
           if (absPos.y + h > maxY) maxY = absPos.y + h;
         });
+        if (!Number.isFinite(minX) || !Number.isFinite(minY) || !Number.isFinite(maxX) || !Number.isFinite(maxY)) return;
 
         const groupId = `group-${uuidv4()}`;
-        const groupWidth = maxX - minX + padding * 2;
-        const groupHeight = maxY - minY + padding * 2;
+        let groupWidth = maxX - minX + padding * 2;
+        let groupHeight = maxY - minY + padding * 2;
+        // Clamp to reasonable bounds
+        groupWidth = Math.min(Math.max(groupWidth, 50), 5000);
+        groupHeight = Math.min(Math.max(groupHeight, 50), 5000);
+        if (!Number.isFinite(groupWidth) || !Number.isFinite(groupHeight)) return;
 
         const groupNode: Node = {
           id: groupId,
@@ -774,14 +806,19 @@ export const useDiagramStore = create<DiagramStore>()(
 
         // 2. Find root nodes (nodes with no incoming connections). We do NOT exclude
         //    grouped nodes (parentId) here — layout should still arrange them.
-        const rootNodes = nodes.filter((node) => !parentMap.has(node.id));
+        let rootNodes = nodes.filter((node) => !parentMap.has(node.id));
+        // Fallback: if all nodes have incoming edges (cyclic graph), pick the first node as root
+        if (rootNodes.length === 0 && nodes.length > 0) {
+          rootNodes = [nodes[0]];
+        }
 
         // 3. Subtree height calculation
         const subtreeHeight = new Map<string, number>();
         const nodeHeightMap = new Map<string, number>();
         
         nodes.forEach(n => {
-          nodeHeightMap.set(n.id, n.measured?.height || n.height || 80);
+          const h = n.measured?.height ?? n.height ?? 80;
+          nodeHeightMap.set(n.id, Number.isFinite(h) ? h : 80);
         });
 
         const getSubtreeHeight = (nodeId: string, visited: Set<string> = new Set()): number => {
@@ -816,8 +853,11 @@ export const useDiagramStore = create<DiagramStore>()(
           if (nodeIdx === -1) return;
           
           const node = updatedNodes[nodeIdx];
-          const w = node.measured?.width || node.width || 160;
-          const h = node.measured?.height || node.height || 80;
+          // Skip grouped children — their position is relative to parent
+          if (node.parentId) return;
+          const w = node.measured?.width ?? node.width ?? 160;
+          const h = node.measured?.height ?? node.height ?? 80;
+          if (!Number.isFinite(w) || !Number.isFinite(h) || !Number.isFinite(x) || !Number.isFinite(yCenter)) return;
           
           updatedNodes[nodeIdx] = {
             ...node,
@@ -885,7 +925,9 @@ export const useDiagramStore = create<DiagramStore>()(
         });
 
         // 3. Create the Edge objects
-        const newEdges: Edge[] = template.edges.map(e => {
+        const newEdges: Edge[] = template.edges
+          .filter(e => idMap.has(e.source) && idMap.has(e.target))
+          .map(e => {
           const newSource = idMap.get(e.source)!;
           const newTarget = idMap.get(e.target)!;
           const stroke = e.style?.stroke || '#94a3b8';
@@ -918,7 +960,10 @@ export const useDiagramStore = create<DiagramStore>()(
           nodes: newNodes,
           edges: newEdges,
           fileHandle: null,
-          fileName: null
+          fileName: null,
+          canvasColor: null,
+          boardNotes: '',
+          gridType: 'dots'
         });
         useDiagramStore.temporal.getState().clear();
       },
@@ -980,15 +1025,20 @@ export const useDiagramStore = create<DiagramStore>()(
       },
 
       loadProject: (state) => {
+        const rawNodes = Array.isArray(state.nodes) ? state.nodes : [];
+        const rawEdges = Array.isArray(state.edges) ? state.edges : [];
+        // Basic sanity: ensure nodes have finite positions if present, else reset to empty
+        const nodes = rawNodes.filter(n => n && typeof n.id === 'string' && n.position && Number.isFinite(n.position.x) && Number.isFinite(n.position.y));
+        const edges = rawEdges.filter(e => e && typeof e.id === 'string' && typeof e.source === 'string' && typeof e.target === 'string');
         set({
-          nodes: state.nodes || [],
-          edges: state.edges || [],
+          nodes,
+          edges,
           theme: state.theme || 'light',
           snapToGrid: state.snapToGrid ?? true,
           gridSize: state.gridSize || 20,
-          boardNotes: state.boardNotes || '',
+          boardNotes: typeof state.boardNotes === 'string' ? state.boardNotes : '',
           gridType: state.gridType || 'dots',
-          canvasColor: state.canvasColor || null,
+          canvasColor: typeof state.canvasColor === 'string' || state.canvasColor === null ? state.canvasColor : null,
           // Reset transient state to avoid getting trapped in presentation mode,
           // locked canvas, or a now-deleted portal after loading a project.
           activeCanvasId: null,
@@ -999,6 +1049,7 @@ export const useDiagramStore = create<DiagramStore>()(
           zoom: 1,
           fileHandle: null,
           fileName: null,
+          lastSavedSnapshot: JSON.stringify({ nodes, edges }),
         });
         useDiagramStore.temporal.getState().clear();
       },
@@ -1011,10 +1062,11 @@ export const useDiagramStore = create<DiagramStore>()(
         const { nodes } = get();
         const selectedNodes = nodes.filter(n => n.selected);
         if (selectedNodes.length < 3) return;
+        if (selectedNodes.some(n => !Number.isFinite(n.position.x) || !Number.isFinite(n.position.y))) return;
 
         const getDims = (n: Node) => ({
-          w: n.measured?.width || n.width || 150,
-          h: n.measured?.height || n.height || 50,
+          w: n.measured?.width ?? n.width ?? 150,
+          h: n.measured?.height ?? n.height ?? 50,
         });
 
         if (direction === 'horizontal') {
@@ -1023,7 +1075,8 @@ export const useDiagramStore = create<DiagramStore>()(
           const last = sorted[sorted.length - 1];
           // Gap based on right-edge of first → left-edge of last, minus total node widths
           const totalWidths = sorted.reduce((sum, n) => sum + getDims(n).w, 0);
-          const availableSpace = (last.position.x + getDims(last).w) - first.position.x - totalWidths;
+          const rawAvailable = (last.position.x + getDims(last).w) - first.position.x - totalWidths;
+          const availableSpace = Math.max(0, rawAvailable);
           const gapSize = sorted.length > 1 ? availableSpace / (sorted.length - 1) : 0;
 
           const updatedNodes = nodes.map(n => {
@@ -1048,7 +1101,8 @@ export const useDiagramStore = create<DiagramStore>()(
           const first = sorted[0];
           const last = sorted[sorted.length - 1];
           const totalHeights = sorted.reduce((sum, n) => sum + getDims(n).h, 0);
-          const availableSpace = (last.position.y + getDims(last).h) - first.position.y - totalHeights;
+          const rawAvailable = (last.position.y + getDims(last).h) - first.position.y - totalHeights;
+          const availableSpace = Math.max(0, rawAvailable);
           const gapSize = sorted.length > 1 ? availableSpace / (sorted.length - 1) : 0;
 
           const updatedNodes = nodes.map(n => {
@@ -1122,7 +1176,7 @@ export const useDiagramStore = create<DiagramStore>()(
             if (pos) {
               const dx = targetX - pos.x;
               updatedPositions.set(c, { x: targetX, y: pos.y });
-              offsetSubtree(c, dx, new Set(visited));
+              offsetSubtree(c, dx, new Set());
             }
             curX += childW;
           });
@@ -1179,19 +1233,20 @@ export const useDiagramStore = create<DiagramStore>()(
         // If you forget to exclude something here, the app can reload trapped in
         // presentation mode, locked canvas, or a now-deleted portal.
         const {
-          fileHandle,
-          fileName,
-          projectId,
-          projectName,
-          clipboard,
-          reactFlowInstance,
-          showHelpModal,
-          isAnimatingLayout,
-          zoom,
-          activeCanvasId,
-          isLocked,
-          presentationMode,
-          activeFilterTag,
+          fileHandle: _fileHandle,
+          fileName: _fileName,
+          projectId: _projectId,
+          projectName: _projectName,
+          clipboard: _clipboard,
+          reactFlowInstance: _reactFlowInstance,
+          showHelpModal: _showHelpModal,
+          isAnimatingLayout: _isAnimatingLayout,
+          zoom: _zoom,
+          activeCanvasId: _activeCanvasId,
+          isLocked: _isLocked,
+          presentationMode: _presentationMode,
+          activeFilterTag: _activeFilterTag,
+          lastSavedSnapshot: _lastSavedSnapshot,
           ...rest
         } = state;
         return rest;
@@ -1202,11 +1257,17 @@ export const useDiagramStore = create<DiagramStore>()(
     partialize: (state) => ({ nodes: state.nodes, edges: state.edges }),
     limit: 100,
     handleSet: (handleSet) => {
-      let timeout: ReturnType<typeof setTimeout> | null;
+      let timeout: ReturnType<typeof setTimeout> | null = null;
+      let lastState: any = null;
       return (state) => {
-        if (timeout) clearTimeout(timeout);
+        lastState = state;
+        if (timeout) {
+          clearTimeout(timeout);
+        }
         timeout = setTimeout(() => {
-          handleSet(state);
+          handleSet(lastState);
+          timeout = null;
+          lastState = null;
         }, 250); // 250ms is perfect for combining quick continuous changes
       };
     }

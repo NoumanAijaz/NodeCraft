@@ -21,6 +21,18 @@ function safeReadJSON<T>(key: string, fallback: T): T {
   }
 }
 
+function isSafeImageUrl(url: string | undefined): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const v = url.trim();
+  if (v.startsWith('data:image/')) {
+    // Must be base64 image, not text/html
+    return /^data:image\/(png|jpeg|jpg|gif|webp);base64,/i.test(v) && v.length < 500000;
+  }
+  if (/^https:\/\//i.test(v)) return v.length < 2000;
+  if (/^http:\/\/localhost/i.test(v)) return v.length < 2000;
+  return false;
+}
+
 const QuickAddOverlay = ({ nodeId, selected, locked }: { nodeId: string; selected: boolean; locked: boolean }) => {
   const addChildNode = useDiagramStore((state) => state.addChildNode);
   const addSiblingNode = useDiagramStore((state) => state.addSiblingNode);
@@ -565,13 +577,31 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
   if (shapeType === 'image') {
     const handleImageUpload = (event: React.ChangeEvent<HTMLInputElement>) => {
       const file = event.target.files?.[0];
-      if (file) {
-        const reader = new FileReader();
-        reader.onloadend = () => {
-          updateNodeData(id, { imageUrl: reader.result as string });
-        };
-        reader.readAsDataURL(file);
+      if (!file) return;
+      // Validate file type and size (2MB limit to avoid localStorage blow-up)
+      if (!file.type.startsWith('image/')) {
+        setImageError(true);
+        return;
       }
+      if (file.size > 2 * 1024 * 1024) {
+        setImageError(true);
+        return;
+      }
+      const reader = new FileReader();
+      reader.onerror = () => setImageError(true);
+      reader.onloadend = () => {
+        const result = reader.result as string;
+        // Only allow data:image base64 (from FileReader) — block other schemes
+        if (typeof result === 'string' && result.startsWith('data:image/')) {
+          updateNodeData(id, { imageUrl: result });
+          setImageError(false);
+        } else {
+          setImageError(true);
+        }
+      };
+      reader.readAsDataURL(file);
+      // Reset input so same file can be re-selected
+      event.target.value = '';
     };
     const triggerUpload = () => {
       fileInputRef.current?.click();
@@ -632,7 +662,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
             className="hidden"
           />
 
-          {imageUrl ? (
+          {isSafeImageUrl(imageUrl) ? (
             <div className="w-full h-full relative">
               {imageError ? (
                 <div className="w-full h-full flex flex-col items-center justify-center p-3 text-red-500 dark:text-red-400 bg-red-50/50 dark:bg-red-950/20">
@@ -641,7 +671,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
                 </div>
               ) : (
                 <img 
-                  src={imageUrl} 
+                  src={imageUrl as string} 
                   alt="Diagram element" 
                   className="w-full h-full object-cover pointer-events-none"
                   onError={() => setImageError(true)}

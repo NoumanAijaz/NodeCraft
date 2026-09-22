@@ -339,6 +339,7 @@ html {
   aside,
   .react-flow__minimap, 
   .react-flow__controls,
+  .react-flow__panel,
   .react-flow__viewport + div, /* Context toolbars */
   .react-flow__viewport + div + div,
   button, 

@@ -20,6 +20,7 @@ import { MultiSelectToolbar } from './MultiSelectToolbar';
 
 import { TimerWidget } from './TimerWidget';
 import { ShortcutsModal } from '../ui/ShortcutsModal';
+import { CommandPalette } from '../ui/CommandPalette';
 import { useToast } from '../../context/ToastContext';
 import { Presentation, Notebook, Users, Zap, ChevronLeft, Pencil, Eraser } from 'lucide-react';
 
@@ -45,13 +46,16 @@ const renderMarkdown = (md: string) => {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;');
-  html = html.replace(/^# (.*$)/gim, '<h1 class="text-base font-bold text-gray-900 dark:text-white border-b border-gray-200 dark:border-gray-700 pb-1 mt-3 mb-1.5">$1</h1>');
-  html = html.replace(/^## (.*$)/gim, '<h2 class="text-sm font-bold text-gray-800 dark:text-gray-200 mt-2.5 mb-1">$1</h2>');
-  html = html.replace(/^### (.*$)/gim, '<h3 class="text-xs font-bold text-gray-700 dark:text-gray-300 mt-2 mb-0.5">$1</h3>');
-  html = html.replace(/\*\*(.*?)\*\*/gim, '<strong class="font-bold text-gray-900 dark:text-white">$1</strong>');
-  html = html.replace(/\*(.*?)\*/gim, '<em class="italic">$1</em>');
-  html = html.replace(/^\> (.*$)/gim, '<blockquote class="border-l-4 border-blue-500 pl-2 text-gray-500 dark:text-gray-400 italic my-2">$1</blockquote>');
-  html = html.replace(/^\- (.*$)/gim, '<li class="list-disc ml-4 text-xs text-gray-700 dark:text-gray-300 my-1">$1</li>');
+  // Use [^\n] instead of .* so the greedy match doesn't swallow the entire
+  // string when `s` (dotall) is enabled by a future flag change — and more
+  // importantly, so the match stays bounded to a single line.
+  html = html.replace(/^# ([^\n]*)\s*$/gm, '<h1 class="text-base font-bold text-gray-900 dark:text-white border-b border-gray-200 dark:border-gray-700 pb-1 mt-3 mb-1.5">$1</h1>');
+  html = html.replace(/^## ([^\n]*)\s*$/gm, '<h2 class="text-sm font-bold text-gray-800 dark:text-gray-200 mt-2.5 mb-1">$1</h2>');
+  html = html.replace(/^### ([^\n]*)\s*$/gm, '<h3 class="text-xs font-bold text-gray-700 dark:text-gray-300 mt-2 mb-0.5">$1</h3>');
+  html = html.replace(/\*\*([^\n]+?)\*\*/g, '<strong class="font-bold text-gray-900 dark:text-white">$1</strong>');
+  html = html.replace(/\*([^\n*]+?)\*/g, '<em class="italic">$1</em>');
+  html = html.replace(/^> ([^\n]*)\s*$/gm, '<blockquote class="border-l-4 border-blue-500 pl-2 text-gray-500 dark:text-gray-400 italic my-2">$1</blockquote>');
+  html = html.replace(/^- ([^\n]*)\s*$/gm, '<li class="list-disc ml-4 text-xs text-gray-700 dark:text-gray-300 my-1">$1</li>');
   html = html.replace(/\n$/gim, '<br />');
   const lines = html.split('\n');
   const processed = lines.map(line => {
@@ -132,6 +136,75 @@ function CanvasContent() {
   const setBoardNotes = useDiagramStore(state => state.setBoardNotes);
   const { showToast } = useToast();
 
+  // ---------- Drag alignment guides (magnetic snap) ----------
+  interface GuideLine { pos: number; start: number; end: number }
+  const [snapGuides, setSnapGuides] = useState<{ v: GuideLine[]; h: GuideLine[] }>({ v: [], h: [] });
+  const SNAP_THRESHOLD = 6;
+
+  const handleNodeDrag = useCallback((_: unknown, node: any, draggedNodes: any[]) => {
+    if (!node || !Number.isFinite(node.position?.x)) return;
+    const store = useDiagramStore.getState();
+    if (store.isLocked || store.presentationMode) return;
+    // Multi-drag and grouped children (relative coords) are skipped
+    if ((draggedNodes?.length ?? 1) > 1 || node.parentId) return;
+
+    const dragW = node.measured?.width ?? node.width ?? 150;
+    const dragH = node.measured?.height ?? node.height ?? 80;
+
+    type Cand = { delta: number; pos: number; start: number; end: number };
+    let bestX: Cand | null = null;
+    let bestY: Cand | null = null;
+
+    for (const other of store.nodes) {
+      if (other.id === node.id || other.parentId) continue;
+      const ow: number = other.measured?.width ?? other.width ?? 150;
+      const oh: number = other.measured?.height ?? other.height ?? 80;
+      if (!Number.isFinite(other.position.x) || !Number.isFinite(ow)) continue;
+
+      const oLeft = other.position.x, oCenter = oLeft + ow / 2, oRight = oLeft + ow;
+      const dLeft = node.position.x, dCenter = dLeft + dragW / 2, dRight = dLeft + dragW;
+      for (const [oVal, dVal] of [[oLeft, dLeft], [oCenter, dCenter], [oRight, dRight]] as const) {
+        const delta = dVal - oVal;
+        if (Math.abs(delta) <= SNAP_THRESHOLD && (!bestX || Math.abs(delta) < Math.abs(bestX.delta))) {
+          bestX = { delta, pos: oVal, start: other.position.y, end: other.position.y + oh };
+        }
+      }
+
+      if (!Number.isFinite(other.position.y) || !Number.isFinite(oh)) continue;
+      const oTop = other.position.y, oMid = oTop + oh / 2, oBot = oTop + oh;
+      const dTop = node.position.y, dMid = dTop + dragH / 2, dBot = dTop + dragH;
+      for (const [oVal, dVal] of [[oTop, dTop], [oMid, dMid], [oBot, dBot]] as const) {
+        const delta = dVal - oVal;
+        if (Math.abs(delta) <= SNAP_THRESHOLD && (!bestY || Math.abs(delta) < Math.abs(bestY.delta))) {
+          bestY = { delta, pos: oVal, start: other.position.x, end: other.position.x + ow };
+        }
+      }
+    }
+
+    const dx = bestX ? -bestX.delta : 0;
+    const dy = bestY ? -bestY.delta : 0;
+    if (dx !== 0 || dy !== 0) {
+      // Nudge the dragged node to the snapped position (React Flow re-fires
+      // onNodeDrag with raw positions on the next mousemove, so this stays live).
+      useDiagramStore.setState({
+        nodes: store.nodes.map(n =>
+          n.id === node.id
+            ? { ...n, position: { x: n.position.x + dx, y: n.position.y + dy } }
+            : n
+        ),
+      });
+    }
+    setSnapGuides({
+      v: bestX ? [{ pos: bestX.pos, start: bestX.start, end: bestX.end }] : [],
+      h: bestY ? [{ pos: bestY.pos, start: bestY.start, end: bestY.end }] : [],
+    });
+  }, []);
+
+  const handleNodeDragStop = useCallback(() => {
+    setSnapGuides({ v: [], h: [] });
+  }, []);
+
+
   // Laser Pointer drawing state
   const laserCanvasRef = useRef<HTMLCanvasElement>(null);
   const laserPoints = useRef<{ x: number; y: number; age: number }[]>([]);
@@ -211,6 +284,11 @@ function CanvasContent() {
     };
     resizeCanvas();
     window.addEventListener('resize', resizeCanvas);
+    let ro: ResizeObserver | null = null;
+    if (typeof ResizeObserver !== 'undefined' && wrapper) {
+      ro = new ResizeObserver(resizeCanvas);
+      ro.observe(wrapper);
+    }
     render();
 
     const handleMouseDown = (e: MouseEvent) => {
@@ -242,6 +320,8 @@ function CanvasContent() {
           laserPoints.current.push({ ...p, age: 0 });
         } else {
           localPoints.push(p);
+          // Cap pen stroke to avoid OOM on long draws
+          if (localPoints.length > 2500) localPoints.shift();
 
           if (effectiveModeRef.current === 'eraser' && getReactFlowInstance()) {
             const rf = getReactFlowInstance();
@@ -256,7 +336,18 @@ function CanvasContent() {
               });
               
               if (nodeToDelete) {
+                // Exiting the portal canvas first prevents getting trapped
+                // when the eraser removes the active portal node.
+                const storeState = useDiagramStore.getState();
+                if (storeState.activeCanvasId === nodeToDelete.id) {
+                  storeState.setActiveCanvasId(null);
+                }
+                const currentEdges = useDiagramStore.getState().edges;
+                const edgesToRemove = currentEdges.filter(e => e.source === nodeToDelete.id || e.target === nodeToDelete.id);
                 useDiagramStore.getState().onNodesChange([{ type: 'remove', id: nodeToDelete.id }]);
+                if (edgesToRemove.length > 0) {
+                  useDiagramStore.getState().onEdgesChange(edgesToRemove.map(e => ({ type: 'remove', id: e.id })));
+                }
               }
               
               // Re-fetch nodes after potential deletion for accurate edge hit-testing
@@ -371,6 +462,7 @@ function CanvasContent() {
     return () => {
       cancelAnimationFrame(animFrame);
       window.removeEventListener('resize', resizeCanvas);
+      if (ro) ro.disconnect();
       wrapper.removeEventListener('mousedown', handleMouseDown, { capture: true });
       wrapper.removeEventListener('mousemove', handleMouseMove, { capture: true });
       window.removeEventListener('mouseup', handleMouseUp, { capture: true });
@@ -442,8 +534,10 @@ function CanvasContent() {
   useStoreReactFlowInstance();
   const reactFlowInstance = useDiagramStore((state) => state.reactFlowInstance);
 
-  // Auto-zoom to the "Start Here" node on first load so users see it centered
+  // Auto-zoom to the "Start Here" node on first load so users see it centered (run once)
+  const hasAutoCenteredRef = React.useRef(false);
   useEffect(() => {
+    if (hasAutoCenteredRef.current) return;
     if (!reactFlowInstance || nodes.length === 0) return;
     const startNode = nodes.find(
       (n) => (n.data as ShapeNodeData).label === 'Start Here' && n.type === 'shape'
@@ -454,6 +548,10 @@ function CanvasContent() {
     const rfInst = reactFlowInstance;
     let timer: ReturnType<typeof setTimeout>;
     try { timer = setTimeout(() => {
+      // Mark as done only when the centering actually fires — setting it
+      // synchronously would break under StrictMode's double-mount (cleanup
+      // cancels the timer, second mount would skip forever).
+      hasAutoCenteredRef.current = true;
       // Walk parentId chain for correct absolute position (child nodes are relative to parent)
       let absX = startNode.position.x, absY = startNode.position.y;
       let cur: typeof startNode = startNode;
@@ -472,7 +570,7 @@ function CanvasContent() {
 
     return () => { if (timer) clearTimeout(timer); };
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [nodes.length, reactFlowInstance]); // run once on mount after nodes render
+  }, [nodes.length, reactFlowInstance]);
 
   // Presentation Mode Slide States & Effects
   const [currentSlideIndex, setCurrentSlideIndex] = useState(0);
@@ -489,7 +587,7 @@ function CanvasContent() {
       });
   }, [visibleNodes]);
 
-  const focusSlide = (index: number) => {
+  const focusSlide = useCallback((index: number) => {
     const node = presentationNodes[index];
     if (node && reactFlowInstance) {
       // Walk parentId chain so the camera centers correctly on grouped nodes
@@ -515,7 +613,15 @@ function CanvasContent() {
       // Select the node so the user sees it is focused
       selectNode(node.id);
     }
-  };
+  }, [presentationNodes, reactFlowInstance, selectNode]);
+
+  // Stabilized refs to avoid tearing down the global keydown listener on every node move
+  const presentationNodesRef = React.useRef(presentationNodes);
+  const focusSlideRef = React.useRef(focusSlide);
+  const currentSlideIndexRef = React.useRef(currentSlideIndex);
+  React.useEffect(() => { presentationNodesRef.current = presentationNodes; }, [presentationNodes]);
+  React.useEffect(() => { focusSlideRef.current = focusSlide; }, [focusSlide]);
+  React.useEffect(() => { currentSlideIndexRef.current = currentSlideIndex; }, [currentSlideIndex]);
 
   useEffect(() => {
     // Clamp currentSlideIndex when nodes are deleted during presentation
@@ -559,8 +665,14 @@ function CanvasContent() {
     const selectedNodeIds = new Set(selectedNodes.map(n => n.id));
     const selectedEdgeIds = new Set(selectedEdges.map(e => e.id));
     
-    if (selectedNodeIds.size > 0 || selectedEdgeIds.size > 0) {
-      const edgesToRemove = edges.filter(
+      if (selectedNodeIds.size > 0 || selectedEdgeIds.size > 0) {
+        // If the active portal node is among those deleted, exit its canvas first
+        // so the user isn't trapped in a now-empty portal view.
+        const store = useDiagramStore.getState();
+        if (store.activeCanvasId && selectedNodeIds.has(store.activeCanvasId)) {
+          store.setActiveCanvasId(null);
+        }
+        const edgesToRemove = edges.filter(
         e => selectedEdgeIds.has(e.id) || selectedNodeIds.has(e.source) || selectedNodeIds.has(e.target)
       );
 
@@ -600,6 +712,14 @@ function CanvasContent() {
         return;
       }
 
+      // While the shortcuts modal is open, swallow canvas shortcuts so keys
+      // like N/P/Tab don't mutate the board behind the modal. Escape and the
+      // modal's own open/close keys still fall through below.
+      const isModalToggleKey = e.key === '?' || (e.ctrlKey && e.key === '/');
+      if (showHelpModal && e.key !== 'Escape' && !isModalToggleKey) {
+        return;
+      }
+
       // Toggle Presentation mode with P key
       if (e.key.toLowerCase() === 'p' && !e.ctrlKey && !e.metaKey && !e.altKey) {
         e.preventDefault();
@@ -629,23 +749,26 @@ function CanvasContent() {
         return;
       }
 
-      // Slide navigation in Presentation Mode
+      // Slide navigation in Presentation Mode (uses refs to avoid deps storm)
       if (presentationMode) {
+        const pNodes = presentationNodesRef.current;
+        const curIdx = currentSlideIndexRef.current;
+        const fSlide = focusSlideRef.current;
         if (e.key === 'ArrowRight' || e.key === 'Space') {
           e.preventDefault();
-          if (currentSlideIndex < presentationNodes.length - 1) {
-            const nextIndex = currentSlideIndex + 1;
+          if (curIdx < pNodes.length - 1) {
+            const nextIndex = curIdx + 1;
             setCurrentSlideIndex(nextIndex);
-            focusSlide(nextIndex);
+            fSlide(nextIndex);
           }
           return;
         }
         if (e.key === 'ArrowLeft') {
           e.preventDefault();
-          if (currentSlideIndex > 0) {
-            const nextIndex = currentSlideIndex - 1;
+          if (curIdx > 0) {
+            const nextIndex = curIdx - 1;
             setCurrentSlideIndex(nextIndex);
-            focusSlide(nextIndex);
+            fSlide(nextIndex);
           }
           return;
         }
@@ -776,9 +899,6 @@ function CanvasContent() {
     reactFlowInstance,
     presentationMode,
     setPresentationMode,
-    currentSlideIndex,
-    presentationNodes,
-    focusSlide,
     showHelpModal,
     setShowHelpModal,
     addChildNode,
@@ -791,14 +911,15 @@ function CanvasContent() {
   useEffect(() => {
     const handleGlobalPaste = (event: ClipboardEvent) => {
       // Guard: don't intercept paste when the user is typing into a form field or contentEditable
-      const target = event.target;
+      const active = document.activeElement as HTMLElement | null;
+      if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA' || active.tagName === 'SELECT' || active.isContentEditable)) {
+        return;
+      }
+      const target = event.target as HTMLElement | null;
       if (target instanceof HTMLElement) {
         if (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.tagName === 'SELECT' || target.isContentEditable) {
           return;
         }
-      } else {
-        // event.target may be a Document or text node — skip safely
-        return;
       }
 
       const clipboardData = event.clipboardData;
@@ -914,6 +1035,8 @@ function CanvasContent() {
           onConnect={onConnect}
           onDragOver={onDragOver}
           onDrop={onDrop}
+          onNodeDrag={handleNodeDrag}
+          onNodeDragStop={handleNodeDragStop}
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={{ padding: 2 }}
@@ -1053,6 +1176,42 @@ function CanvasContent() {
             className="absolute inset-0 w-full h-full z-40 pointer-events-none"
           />
         )}
+
+        {/* Alignment guide lines (flow coords → screen via flowToScreenPosition) */}
+        {(snapGuides.v.length > 0 || snapGuides.h.length > 0) && reactFlowInstance?.flowToScreenPosition && (() => {
+          const rect = reactFlowWrapper.current?.getBoundingClientRect();
+          if (!rect) return null;
+          const toScreen = (p: { x: number; y: number }) => {
+            const s = reactFlowInstance.flowToScreenPosition(p);
+            return { x: s.x - rect.left, y: s.y - rect.top };
+          };
+          return (
+            <div className="absolute inset-0 pointer-events-none z-30">
+              {snapGuides.v.map((g, i) => {
+                const a = toScreen({ x: g.pos, y: g.start });
+                const b = toScreen({ x: g.pos, y: g.end });
+                return (
+                  <div
+                    key={`v${i}`}
+                    className="absolute bg-pink-500/80"
+                    style={{ left: a.x - 0.5, top: a.y - 6, width: 1, height: Math.max(2, b.y - a.y + 12) }}
+                  />
+                );
+              })}
+              {snapGuides.h.map((g, i) => {
+                const a = toScreen({ x: g.start, y: g.pos });
+                const b = toScreen({ x: g.end, y: g.pos });
+                return (
+                  <div
+                    key={`h${i}`}
+                    className="absolute bg-pink-500/80"
+                    style={{ top: a.y - 0.5, left: a.x - 6, height: 1, width: Math.max(2, b.x - a.x + 12) }}
+                  />
+                );
+              })}
+            </div>
+          );
+        })()}
 
 
 
@@ -1505,6 +1664,7 @@ function CanvasContent() {
       )}
 
       <ShortcutsModal isOpen={showHelpModal} onClose={() => setShowHelpModal(false)} />
+      <CommandPalette />
     </>
   );
 }

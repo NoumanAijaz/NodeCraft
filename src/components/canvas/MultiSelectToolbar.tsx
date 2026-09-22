@@ -10,9 +10,11 @@ export function MultiSelectToolbar() {
   const [showAlignLabel, setShowAlignLabel] = useState(false);
   const [showDistLabel, setShowDistLabel] = useState(false);
 
-  const portalNode = selectedNodes.find(n => (n.data as any).shapeType === 'portal');
+  const portalNodes = selectedNodes.filter(n => (n.data as any).shapeType === 'portal');
+  const portalNode = portalNodes.length === 1 ? portalNodes[0] : undefined;
   const nodesToMove = selectedNodes.filter(n => n.id !== portalNode?.id);
-  const canMoveToPortal = !!portalNode && nodesToMove.length > 0;
+  // Only allow when exactly one portal selected; also don't show if nodes already inside that portal
+  const canMoveToPortal = !!portalNode && nodesToMove.length > 0 && portalNodes.length === 1 && nodesToMove.some(n => (n.data as any).portalId !== portalNode.id);
 
   if (presentationMode || selectedNodes.length < 2) {
     return null;
@@ -235,8 +237,18 @@ export function MultiSelectToolbar() {
       {/* Delete */}
       <button
         onClick={() => {
-          const ids = selectedNodes.map(n => n.id);
-          useDiagramStore.getState().onNodesChange(ids.map(id => ({ type: 'remove', id })));
+          const store = useDiagramStore.getState();
+          const { edges } = store;
+          const nodeIds = new Set(selectedNodes.map(n => n.id));
+          // Exit portal canvas if the active portal node is being deleted
+          if (store.activeCanvasId && nodeIds.has(store.activeCanvasId)) {
+            store.setActiveCanvasId(null);
+          }
+          const edgesToRemove = edges.filter(e => nodeIds.has(e.source) || nodeIds.has(e.target));
+          store.onNodesChange(Array.from(nodeIds).map(id => ({ type: 'remove', id })));
+          if (edgesToRemove.length > 0) {
+            store.onEdgesChange(edgesToRemove.map(e => ({ type: 'remove', id: e.id })));
+          }
         }}
         className="toolbar-btn p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:bg-red-50 dark:hover:bg-red-900/30 hover:text-red-500 dark:hover:text-red-400 transition-all ml-0.5"
         title="Delete selection"

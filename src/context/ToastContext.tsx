@@ -12,6 +12,7 @@ export interface ToastContextType {
 
 const ToastContext = createContext<ToastContextType | undefined>(undefined);
 
+// eslint-disable-next-line react-refresh/only-export-components
 export const useToast = (): ToastContextType => {
   const context = useContext(ToastContext);
   if (!context) {
@@ -34,10 +35,26 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   const showToast = useCallback((message: string, type: ToastType = 'info', duration = 3000) => {
-    const id = `toast-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    const id = typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function'
+      ? `toast-${crypto.randomUUID()}`
+      : `toast-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
     const newToast: ToastItem = { id, message, type };
     
-    setToasts(prev => [...prev, newToast]);
+    setToasts(prev => {
+      const next = [...prev, newToast];
+      if (next.length > 5) {
+        const evicted = next.slice(0, next.length - 5);
+        evicted.forEach(t => {
+          const timer = timersRef.current.get(t.id);
+          if (timer) {
+            clearTimeout(timer);
+            timersRef.current.delete(t.id);
+          }
+        });
+        return next.slice(-5);
+      }
+      return next;
+    });
 
     const timer = setTimeout(() => {
       hideToast(id);
@@ -47,8 +64,9 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
   }, [hideToast]);
 
   useEffect(() => {
+    const timers = timersRef.current;
     return () => {
-      timersRef.current.forEach(timer => clearTimeout(timer));
+      timers.forEach(timer => clearTimeout(timer));
     };
   }, []);
 
