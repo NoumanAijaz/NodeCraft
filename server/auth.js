@@ -22,6 +22,11 @@ export const JWT_SECRET = (() => {
   return fallback;
 })();
 
+// Pre-computed bcrypt hash. When the username does not exist we still run a
+// bcrypt.compare against this hash so the response takes the same time as a
+// real password check — otherwise login latency leaks which usernames exist.
+const DUMMY_BCRYPT_HASH = bcrypt.hashSync('nodecraft-timing-equalizer', 10);
+
 // Auth middleware to verify JWT
 export const authenticateToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
@@ -34,12 +39,13 @@ export const authenticateToken = (req, res, next) => {
 
   jwt.verify(token, JWT_SECRET, { algorithms: ['HS256'] }, (err, user) => {
     if (err) {
-      return res.status(403).json({ error: 'Invalid or expired token' });
+      // 401 (not 403): the client is unauthenticated, not merely unauthorized.
+      return res.status(401).json({ error: 'Invalid or expired token' });
     }
     // Reject structurally valid tokens that lack our payload shape (e.g. a
     // token minted against a different secret/service reusing this key).
     if (!user || typeof user.userId !== 'number' || typeof user.username !== 'string') {
-      return res.status(403).json({ error: 'Invalid or expired token' });
+      return res.status(401).json({ error: 'Invalid or expired token' });
     }
     req.user = user;
     next();
@@ -131,6 +137,12 @@ router.post('/login', (req, res) => {
 
   const cleanUsername = username.trim().toLowerCase();
 
+  // Registration caps passwords at 128 chars (bcrypt only hashes the first 72
+  // bytes), so anything longer can never match a stored hash — reject early.
+  if (password.length > 128) {
+    return res.status(401).json({ error: 'Invalid username or password' });
+  }
+
   db.get(
     `SELECT * FROM users WHERE username = ?`,
     [cleanUsername],
@@ -140,6 +152,13 @@ router.post('/login', (req, res) => {
       }
 
       if (!user) {
+        // Burn the same bcrypt CPU time as a real password check so response
+        // timing doesn't reveal whether the username exists.
+        try {
+          await bcrypt.compare(password, DUMMY_BCRYPT_HASH);
+        } catch {
+          /* the comparison result is irrelevant here */
+        }
         return res.status(401).json({ error: 'Invalid username or password' });
       }
 

@@ -271,8 +271,15 @@ export function TopNav() {
     }
   };
 
+  // Monotonic save revision: lets a stale save detect that a newer save
+  // started after it, so it can skip settling the status (see below).
+  const saveRevisionRef = useRef(0);
+
   const handleCloudSave = useCallback(async (silent = false) => {
     if (!projectId) return;
+    // Monotonic revision so a stale save that resolves AFTER a newer save
+    // started can't clobber the newer status/snapshot (out-of-order resolves).
+    const revision = ++saveRevisionRef.current;
     try {
       setSaveStatus('saving');
       const state = useDiagramStore.getState();
@@ -295,12 +302,16 @@ export function TopNav() {
         name: projectName || 'Untitled Diagram',
       });
 
+      // A newer save started after this one — its outcome (and its
+      // markSaved/setSaveStatus) is authoritative; don't clobber it.
+      if (revision !== saveRevisionRef.current) return;
       markSaved(snapshot);
       setSaveStatus('saved');
       if (!silent) {
         showToast('Saved to cloud', 'success');
       }
     } catch (err) {
+      if (revision !== saveRevisionRef.current) return;
       console.error('Failed to save project:', err);
       setSaveStatus('unsaved');
       if (!silent) {

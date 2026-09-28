@@ -204,7 +204,13 @@ const db = {
           const [user_id] = params;
           const userProjects = projects
             .filter(p => p.user_id === user_id)
-            .sort((a, b) => new Date(b.updated_at).getTime() - new Date(a.updated_at).getTime());
+            // Guard against invalid timestamps: an unparseable date yields NaN,
+            // and a comparator returning NaN makes the sort order undefined.
+            .sort((a, b) => {
+              const ta = new Date(a.updated_at).getTime();
+              const tb = new Date(b.updated_at).getTime();
+              return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta);
+            });
           if (callback) callback(null, userProjects);
         } else {
           // Fail loudly like run() — returning [] here once hid real bugs.

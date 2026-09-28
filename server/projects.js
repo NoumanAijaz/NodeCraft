@@ -607,6 +607,17 @@ router.delete('/:id', authenticateToken, (req, res) => {
         }
       }
 
+      // Remove the version-history directory too — otherwise every deleted
+      // project leaks up to MAX_VERSIONS_PER_PROJECT snapshot files forever.
+      try {
+        const versionsDir = getVersionsDir(username, projectId);
+        if (fs.existsSync(versionsDir)) {
+          fs.rmSync(versionsDir, { recursive: true, force: true });
+        }
+      } catch (versionsErr) {
+        console.warn('Warning: Failed to delete project versions dir:', versionsErr.message);
+      }
+
       db.run(
         `DELETE FROM projects WHERE id = ? AND user_id = ?`,
         [projectId, userId],

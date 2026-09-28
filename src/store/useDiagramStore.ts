@@ -635,8 +635,8 @@ export const useDiagramStore = create<DiagramStore>()(
           .map(e => ({
             ...e,
             id: uuidv4(),
-            source: idMap.get(e.source) || e.source,
-            target: idMap.get(e.target) || e.target,
+            source: idMap.get(e.source)!,
+            target: idMap.get(e.target)!,
             selected: true,
           }));
 
@@ -793,10 +793,17 @@ export const useDiagramStore = create<DiagramStore>()(
         const { nodes, edges } = get();
         if (nodes.length === 0) return;
 
-        // 1. Identify parent-child relationships from edges
+        // 1. Identify parent-child relationships from edges.
+        // Grouped children are frozen in place by layoutNode, so edges touching
+        // them are excluded here — otherwise getSubtreeHeight would reserve gaps
+        // for subtrees that never move, pushing siblings far apart.
+        const nodeById = new Map(nodes.map(n => [n.id, n]));
         const childrenMap = new Map<string, string[]>();
         const parentMap = new Map<string, string>();
         edges.forEach((edge) => {
+          const s = nodeById.get(edge.source);
+          const t = nodeById.get(edge.target);
+          if (!s || !t || s.parentId || t.parentId) return;
           if (!childrenMap.has(edge.source)) {
             childrenMap.set(edge.source, []);
           }
@@ -1149,6 +1156,19 @@ export const useDiagramStore = create<DiagramStore>()(
         const startY = roots[0].position.y;
         const updatedPositions = new Map<string, { x: number; y: number }>();
 
+        const offsetSubtree = (nodeId: string, dx: number, visited: Set<string>) => {
+          if (visited.has(nodeId)) return;
+          visited.add(nodeId);
+          const children = childrenMap.get(nodeId) || [];
+          children.forEach(c => {
+            const pos = updatedPositions.get(c);
+            if (pos) {
+              updatedPositions.set(c, { x: pos.x + dx, y: pos.y });
+              offsetSubtree(c, dx, visited);
+            }
+          });
+        };
+
         const layoutSubtree = (nodeId: string, x: number, y: number, visited: Set<string> = new Set()): number => {
           // Cycle guard — bail if we've already visited this node in this pass
           if (visited.has(nodeId)) return 0;
@@ -1182,19 +1202,6 @@ export const useDiagramStore = create<DiagramStore>()(
           });
 
           return totalWidth;
-        };
-
-        const offsetSubtree = (nodeId: string, dx: number, visited: Set<string>) => {
-          if (visited.has(nodeId)) return;
-          visited.add(nodeId);
-          const children = childrenMap.get(nodeId) || [];
-          children.forEach(c => {
-            const pos = updatedPositions.get(c);
-            if (pos) {
-              updatedPositions.set(c, { x: pos.x + dx, y: pos.y });
-              offsetSubtree(c, dx, visited);
-            }
-          });
         };
 
         let currentRootX = startX;

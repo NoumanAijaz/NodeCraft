@@ -353,6 +353,10 @@ function CanvasContent() {
               // Re-fetch nodes after potential deletion for accurate edge hit-testing
               const freshNodes = useDiagramStore.getState().nodes;
               const currentEdges = useDiagramStore.getState().edges;
+              // Hit tolerance is in flow space — scale it with the current zoom
+              // so "20px on screen" feels consistent at any zoom level.
+              const zoom = typeof rf.getZoom === 'function' ? rf.getZoom() : 1;
+              const edgeTolerance = zoom > 0 ? 20 / zoom : 20;
               const edgeToDelete = currentEdges.find(edge => {
                 const sourceNode = freshNodes.find(n => n.id === edge.source);
                 const targetNode = freshNodes.find(n => n.id === edge.target);
@@ -389,7 +393,7 @@ function CanvasContent() {
                 const dy = flowP.y - yy;
                 const distance = Math.sqrt(dx * dx + dy * dy);
                 
-                return distance < 20;
+                return distance < edgeTolerance;
               });
               
               if (edgeToDelete) {
@@ -429,8 +433,10 @@ function CanvasContent() {
           if (rf) {
             const flowMin = rf.screenToFlowPosition({ x: minX + rect.left, y: minY + rect.top });
             const flowMax = rf.screenToFlowPosition({ x: maxX + rect.left, y: maxY + rect.top });
-            const flowW = flowMax.x - flowMin.x;
-            const flowH = flowMax.y - flowMin.y;
+            // Clamp to ≥1 so perfectly horizontal/vertical strokes don't create
+            // a zero-size node (which renders as an invisible, unselectable box).
+            const flowW = Math.max(flowMax.x - flowMin.x, 1);
+            const flowH = Math.max(flowMax.y - flowMin.y, 1);
 
             // Generate normalized SVG path relative to bounding box
             const flowPoints = localPoints.map(p => rf.screenToFlowPosition({ x: p.x + rect.left, y: p.y + rect.top }));
@@ -863,6 +869,8 @@ function CanvasContent() {
         e.preventDefault();
         if (showHelpModal) {
           setShowHelpModal(false);
+        } else if (showGridSettings) {
+          setShowGridSettings(false);
         } else {
           selectNode(null);
           const { edges } = useDiagramStore.getState();
@@ -901,6 +909,8 @@ function CanvasContent() {
     setPresentationMode,
     showHelpModal,
     setShowHelpModal,
+    showGridSettings,
+    setShowGridSettings,
     addChildNode,
     addSiblingNode,
     addNode,
@@ -933,8 +943,11 @@ function CanvasContent() {
             if (item.type.indexOf('image') !== -1) {
               const blob = item.getAsFile();
               if (blob) {
-                const reader = new FileReader();
-                reader.onload = (e) => {
+                 const reader = new FileReader();
+                 reader.onerror = () => {
+                   showToast('Failed to read image from clipboard', 'error');
+                 };
+                 reader.onload = (e) => {
                   const imageUrl = e.target?.result as string;
                   const rect = reactFlowWrapper.current?.getBoundingClientRect();
                   const centerX = rect ? rect.left + rect.width / 2 : window.innerWidth / 2;
@@ -1043,6 +1056,10 @@ function CanvasContent() {
           minZoom={0.1}
           maxZoom={4}
           panOnScroll={true}
+          // Deletion is handled by the global keyboard listener below (it exits
+          // the active portal canvas and cleans up connected edges first).
+          // Letting ReactFlow delete directly can trap the user in a portal.
+          deleteKeyCode={null}
           nodesDraggable={!isLocked && effectiveInteractionMode !== 'laser' && effectiveInteractionMode !== 'pen' && effectiveInteractionMode !== 'eraser' && !presentationMode}
           nodesConnectable={!isLocked && effectiveInteractionMode !== 'laser' && effectiveInteractionMode !== 'pen' && effectiveInteractionMode !== 'eraser' && !presentationMode}
           elementsSelectable={!isLocked && effectiveInteractionMode !== 'laser' && effectiveInteractionMode !== 'pen' && effectiveInteractionMode !== 'eraser' && !presentationMode}
@@ -1089,8 +1106,9 @@ function CanvasContent() {
                 onClick={() => setShowNotepad(!showNotepad)}
                 className={`bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-md p-1.5 shadow-md transition-colors flex items-center justify-center ${showNotepad ? 'text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700 hover:text-blue-600 dark:hover:text-blue-400'}`}
                 title="Board Notepad"
+                aria-label="Board Notepad"
               >
-                <Notebook size={14} />
+                <Notebook size={14} aria-hidden="true" />
               </button>
 
 
@@ -1100,6 +1118,7 @@ function CanvasContent() {
                 onClick={() => setShowMiniMap(!showMiniMap)}
                 className="bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-md p-1.5 shadow-md text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-slate-700 hover:text-gray-700 dark:hover:text-gray-200 transition-colors flex items-center justify-center"
                 title={showMiniMap ? "Collapse minimap" : "Expand minimap"}
+                aria-label={showMiniMap ? "Collapse minimap" : "Expand minimap"}
               >
                 {showMiniMap ? (
                   <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5">
@@ -1410,6 +1429,7 @@ function CanvasContent() {
                 onClick={() => setInteractionMode('select')}
                 className={`p-2.5 transition-all active:scale-95 ${interactionMode === 'select' ? 'bg-blue-500 text-white shadow-inner' : 'text-gray-500 hover:bg-white/60 dark:hover:bg-white/5'}`}
                 title="Select Tool (Shift + Drag to lasso)"
+                aria-label="Select Tool"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>
               </button>
@@ -1418,6 +1438,7 @@ function CanvasContent() {
                 onClick={() => setInteractionMode('pan')}
                 className={`p-2.5 transition-all active:scale-95 ${interactionMode === 'pan' ? 'bg-blue-500 text-white shadow-inner' : 'text-gray-500 hover:bg-white/60 dark:hover:bg-white/5'}`}
                 title="Pan Tool (Space + Drag)"
+                aria-label="Pan Tool"
               >
                 <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M18 11V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v0"/><path d="M14 10V4a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v2"/><path d="M10 10.5V6a2 2 0 0 0-2-2v0a2 2 0 0 0-2 2v8"/><path d="M18 8a2 2 0 1 1 4 0v6a8 8 0 0 1-8 8h-2c-2.8 0-4.5-.86-5.99-2.34l-3.6-3.6a2 2 0 0 1 2.83-2.82L7 15"/></svg>
               </button>
@@ -1426,24 +1447,27 @@ function CanvasContent() {
                 onClick={() => setInteractionMode('laser')}
                 className={`p-2.5 transition-all active:scale-95 ${interactionMode === 'laser' ? 'bg-red-500 text-white shadow-inner' : 'text-gray-500 hover:bg-white/60 dark:hover:bg-white/5'}`}
                 title="Laser Pointer"
+                aria-label="Laser Pointer"
               >
-                <Zap size={16} className={interactionMode === 'laser' ? 'fill-current' : ''} />
+                <Zap size={16} className={interactionMode === 'laser' ? 'fill-current' : ''} aria-hidden="true" />
               </button>
               <div className="w-px bg-gray-200/60 dark:bg-gray-700/40" />
               <button
                 onClick={() => setInteractionMode('pen')}
                 className={`p-2.5 transition-all active:scale-95 ${interactionMode === 'pen' ? 'bg-blue-500 text-white shadow-inner' : 'text-gray-500 hover:bg-white/60 dark:hover:bg-white/5'}`}
                 title="Pen Tool"
+                aria-label="Pen Tool"
               >
-                <Pencil size={16} />
+                <Pencil size={16} aria-hidden="true" />
               </button>
               <div className="w-px bg-gray-200/60 dark:bg-gray-700/40" />
               <button
                 onClick={() => setInteractionMode('eraser')}
                 className={`p-2.5 transition-all active:scale-95 ${interactionMode === 'eraser' ? 'bg-pink-500 text-white shadow-inner' : 'text-gray-500 hover:bg-white/60 dark:hover:bg-white/5'}`}
                 title="Eraser Tool"
+                aria-label="Eraser Tool"
               >
-                <Eraser size={16} />
+                <Eraser size={16} aria-hidden="true" />
               </button>
             </div>
           )}
@@ -1454,8 +1478,10 @@ function CanvasContent() {
               onClick={() => setSimulateCollaborators(!simulateCollaborators)}
               className={`p-2.5 glass-panel border border-gray-200/60 dark:border-gray-700/40 rounded-xl shadow-lg transition-all active:scale-95 ${simulateCollaborators ? 'text-green-600 dark:text-green-400 bg-green-50/80 dark:bg-green-900/20' : 'text-gray-500 hover:bg-white/60 dark:hover:bg-white/5'}`}
               title="Toggle Live Collaborators Simulation"
+              aria-label="Toggle Live Collaborators Simulation"
+              aria-pressed={simulateCollaborators}
             >
-              <Users size={16} />
+              <Users size={16} aria-hidden="true" />
             </button>
           )}
 
@@ -1473,8 +1499,10 @@ function CanvasContent() {
                   : 'text-gray-600 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700'
               }`}
               title={`Toggle Snap to Grid (G)`}
+              aria-label={`Toggle Snap to Grid ${snapToGrid ? '(on)' : '(off)'}`}
+              aria-pressed={snapToGrid}
             >
-              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+              <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
                 <path d="M1 1h5v5H1V1zm0 9h5v5H1v-5zm9-9h5v5h-5V1zm0 9h5v5h-5v-5z"/>
               </svg>
               <span className="font-medium">Grid</span>
@@ -1489,8 +1517,10 @@ function CanvasContent() {
               onClick={() => setShowGridSettings(!showGridSettings)}
               className={`px-2 py-1.5 text-xs transition-colors text-gray-500 dark:text-gray-400 hover:bg-gray-50 dark:hover:bg-gray-700 rounded-r-xl ${showGridSettings ? 'bg-gray-100 dark:bg-gray-700' : ''}`}
               title="Grid Settings"
+              aria-label="Grid Settings"
+              aria-expanded={showGridSettings}
             >
-              <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <svg width="8" height="8" viewBox="0 0 10 10" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true">
                 <path d="M2 4 L5 7 L8 4" />
               </svg>
             </button>
@@ -1570,9 +1600,10 @@ function CanvasContent() {
                             backgroundImage: color.value === null ? 'linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), linear-gradient(45deg, #ccc 25%, #fff 25%, #fff 75%, #ccc 75%, #ccc)' : 'none',
                             backgroundSize: color.value === null ? '6px 6px' : 'auto'
                           }}
-                          title={color.name}
-                        />
-                      ))}
+                           title={color.name}
+                           aria-label={`Canvas color: ${color.name}`}
+                         />
+                       ))}
                     </div>
                     <div className="flex items-center gap-1.5 mt-2 bg-gray-50 dark:bg-slate-700 rounded px-1.5 py-0.5">
                       <span className="text-[9px] font-semibold text-gray-400">Custom</span>
@@ -1584,6 +1615,7 @@ function CanvasContent() {
                         }}
                         className="w-5 h-5 p-0 border-0 rounded cursor-pointer bg-transparent"
                         title="Custom Canvas Color"
+                        aria-label="Custom Canvas Color"
                       />
                     </div>
                   </div>

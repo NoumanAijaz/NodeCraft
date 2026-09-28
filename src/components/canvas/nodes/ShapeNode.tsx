@@ -1,10 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo } from 'react';
 import { Handle, Position } from '@xyflow/react';
 import { NodeResizer } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { ShapeNodeData, ShapeNode as ShapeNodeType } from '../../../types/diagram';
 import { useDiagramStore } from '../../../store/useDiagramStore';
 import { colorGradients } from '../../../constants/colors';
+import { useToast } from '../../../context/ToastContext';
 import { Image as ImageIcon, Lock, User, Calendar, FileText } from 'lucide-react';
 
 /**
@@ -33,11 +34,11 @@ function isSafeImageUrl(url: string | undefined): boolean {
   return false;
 }
 
-const QuickAddOverlay = ({ nodeId, selected, locked }: { nodeId: string; selected: boolean; locked: boolean }) => {
+const QuickAddOverlay = memo(function QuickAddOverlay({ nodeId, selected, locked }: { nodeId: string; selected: boolean; locked: boolean }) {
   const addChildNode = useDiagramStore((state) => state.addChildNode);
   const addSiblingNode = useDiagramStore((state) => state.addSiblingNode);
   if (!selected || locked) return null;
-  
+
   return (
     <>
       {/* Right Quick Add Button */}
@@ -48,8 +49,9 @@ const QuickAddOverlay = ({ nodeId, selected, locked }: { nodeId: string; selecte
         }}
         className="absolute -right-6 top-1/2 -translate-y-1/2 w-5 h-5 bg-blue-500 hover:bg-blue-600 text-white rounded-full flex items-center justify-center shadow-md z-30 transition-all hover:scale-125 no-print"
         title="Add child node"
+        aria-label="Add child node"
       >
-        <span className="text-[14px] font-extrabold leading-none">+</span>
+        <span className="text-[14px] font-extrabold leading-none" aria-hidden="true">+</span>
       </button>
 
       {/* Bottom Quick Add Button */}
@@ -60,31 +62,31 @@ const QuickAddOverlay = ({ nodeId, selected, locked }: { nodeId: string; selecte
         }}
         className="absolute -bottom-6 left-1/2 -translate-x-1/2 w-5 h-5 bg-green-500 hover:bg-green-600 text-white rounded-full flex items-center justify-center shadow-md z-30 transition-all hover:scale-125 no-print"
         title="Add sibling node"
+        aria-label="Add sibling node"
       >
-        <span className="text-[14px] font-extrabold leading-none">+</span>
+        <span className="text-[14px] font-extrabold leading-none" aria-hidden="true">+</span>
       </button>
     </>
   );
-};
+});
 
 interface ShapeStyleConfig {
   borderRadius: string;
   gradient?: [string, string];
-  specialShadow?: boolean;
 }
 
 const shapeStyles: Record<string, ShapeStyleConfig> = {
   rectangle: { borderRadius: '8px', gradient: ['#ffffff', '#f1f5f9'] },
   circle: { borderRadius: '50%', gradient: ['#f0f9ff', '#bae6fd'] },
   diamond: { borderRadius: '4px', gradient: ['#fef3c7', '#fde68a'] },
-  sticky: { borderRadius: '2px', specialShadow: true },
+  sticky: { borderRadius: '2px' },
   text: { borderRadius: '4px' },
 };
 
-const TagsOverlay = ({ tags }: { tags?: string[] }) => {
+const TagsOverlay = memo(function TagsOverlay({ tags }: { tags?: string[] }) {
   if (!tags || tags.length === 0) return null;
   return (
-    <div className="absolute -bottom-2.5 left-2 flex gap-1 z-30 flex-wrap max-w-[90%] pointer-events-none no-print">
+    <div className="absolute -bottom-2.5 left-2 flex gap-1 z-30 flex-wrap max-w-[90%] pointer-events-none no-print" aria-label="Node tags">
       {tags.map((tag, i) => (
         <div key={i} className="px-1.5 py-0.5 rounded-full text-[9px] font-bold text-white bg-blue-500 shadow-sm border border-blue-600 truncate max-w-[60px] pointer-events-auto" title={tag}>
           {tag}
@@ -92,10 +94,100 @@ const TagsOverlay = ({ tags }: { tags?: string[] }) => {
       ))}
     </div>
   );
-};
+});
 
-const Overlays = ({ id, votes, reactions, tags, notes }: { id: string; votes?: number; reactions?: Record<string, number>; tags?: string[]; notes?: string }) => {
+const VoteBadge = memo(function VoteBadge({ id, votes }: { id: string; votes: number }) {
   const updateNodeData = useDiagramStore((state) => state.updateNodeData);
+  const [hasVoted, setHasVoted] = useState<boolean>(() => safeReadJSON<string[]>('nodecraft_votes', []).includes(id));
+
+  const handleClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Re-read fresh state on click so rapid double-clicks toggle correctly.
+    const userVotes = safeReadJSON<string[]>('nodecraft_votes', []);
+    const voted = userVotes.includes(id);
+    const nextUserVotes = [...userVotes];
+    let newVotes = votes;
+    if (voted) {
+      newVotes = Math.max(0, votes - 1);
+      const idx = nextUserVotes.indexOf(id);
+      if (idx > -1) nextUserVotes.splice(idx, 1);
+    } else {
+      newVotes = votes + 1;
+      nextUserVotes.push(id);
+    }
+    try { localStorage.setItem('nodecraft_votes', JSON.stringify(nextUserVotes)); } catch { /* ignore quota */ }
+    setHasVoted(!voted);
+    updateNodeData(id, { votes: newVotes });
+  };
+
+  return (
+    <button
+      onClick={handleClick}
+      className={`absolute -top-3.5 -right-3.5 rounded-full px-2 py-0.5 text-[10px] font-extrabold shadow-md border z-30 transition-transform hover:scale-110 flex items-center gap-0.5 cursor-pointer no-print ${hasVoted ? 'bg-rose-500 border-rose-600 text-white' : 'bg-white dark:bg-slate-800 border-rose-200 dark:border-rose-700 text-rose-500'}`}
+      title={hasVoted ? "Remove Vote" : "Click to vote"}
+      aria-label={hasVoted ? "Remove vote" : "Click to vote"}
+      aria-pressed={hasVoted}
+    >
+      <span aria-hidden="true">❤️</span> {votes}
+    </button>
+  );
+});
+
+const ReactionsBar = memo(function ReactionsBar({ id, reactions }: { id: string; reactions: Record<string, number> }) {
+  const updateNodeData = useDiagramStore((state) => state.updateNodeData);
+  const [myReactions, setMyReactions] = useState<string[]>(() => safeReadJSON<Record<string, string[]>>('nodecraft_reactions', {})[id] || []);
+
+  const makeToggle = (emoji: string, count: number) => (e: React.MouseEvent) => {
+    e.stopPropagation();
+    // Re-read fresh state on click so rapid double-clicks toggle correctly.
+    const freshUserReactions = safeReadJSON<Record<string, string[]>>('nodecraft_reactions', {});
+    const freshNodeReactions = freshUserReactions[id] || [];
+    const reacted = freshNodeReactions.includes(emoji);
+    const newNodeReactions = [...freshNodeReactions];
+    let newCount = count;
+    if (reacted) {
+      newCount = Math.max(0, count - 1);
+      const idx = newNodeReactions.indexOf(emoji);
+      if (idx > -1) newNodeReactions.splice(idx, 1);
+    } else {
+      newCount = count + 1;
+      newNodeReactions.push(emoji);
+    }
+    freshUserReactions[id] = newNodeReactions;
+    try { localStorage.setItem('nodecraft_reactions', JSON.stringify(freshUserReactions)); } catch { /* ignore quota */ }
+    setMyReactions([...newNodeReactions]);
+
+    const nextReactions = { ...reactions };
+    if (newCount <= 0) {
+      delete nextReactions[emoji];
+    } else {
+      nextReactions[emoji] = newCount;
+    }
+    updateNodeData(id, { reactions: nextReactions });
+  };
+
+  return (
+    <div className="absolute -top-6 left-2 flex gap-1 z-30 flex-wrap max-w-[90%] pointer-events-none no-print">
+      {Object.entries(reactions).map(([emoji, count]) => {
+        if (count <= 0) return null;
+        const hasReacted = myReactions.includes(emoji);
+        return (
+          <button
+            key={emoji}
+            onClick={makeToggle(emoji, count)}
+            className={`px-1.5 py-0.5 rounded-full text-[10px] border shadow-sm font-medium pointer-events-auto hover:scale-105 transition-transform ${hasReacted ? 'bg-blue-500 text-white border-blue-600' : 'bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'}`}
+            aria-pressed={hasReacted}
+            aria-label={`React with ${emoji}`}
+          >
+            <span aria-hidden="true">{emoji}</span> <span className="text-[8px] font-bold opacity-75">{count}</span>
+          </button>
+        );
+      })}
+    </div>
+  );
+});
+
+const Overlays = memo(function Overlays({ id, votes, reactions, tags, notes }: { id: string; votes?: number; reactions?: Record<string, number>; tags?: string[]; notes?: string }) {
   const selectNode = useDiagramStore((state) => state.selectNode);
   return (
     <>
@@ -108,8 +200,9 @@ const Overlays = ({ id, votes, reactions, tags, notes }: { id: string; votes?: n
           }}
           className="absolute -top-3.5 left-2 bg-yellow-400 text-yellow-900 rounded-full p-1 shadow-md border border-yellow-500 z-30 transition-transform hover:scale-110 flex items-center justify-center cursor-pointer no-print group/notebadge"
           title="Contains Markdown Notes"
+          aria-label="Contains Markdown Notes"
         >
-          <FileText size={12} strokeWidth={2.5} />
+          <FileText size={12} strokeWidth={2.5} aria-hidden="true" />
           {/* Hover Tooltip */}
           <div className="absolute top-full left-0 mt-1 opacity-0 invisible group-hover/notebadge:opacity-100 group-hover/notebadge:visible transition-all duration-200 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 shadow-xl rounded-md p-2 w-48 text-xs text-gray-700 dark:text-gray-300 pointer-events-none z-50 text-left overflow-hidden">
             <p className="line-clamp-4 font-normal leading-relaxed text-[10px]">
@@ -120,93 +213,26 @@ const Overlays = ({ id, votes, reactions, tags, notes }: { id: string; votes?: n
       )}
 
       {/* Top Right Vote Badge */}
-      {typeof votes === 'number' && votes > 0 && (() => {
-        const userVotes = safeReadJSON<string[]>('nodecraft_votes', []);
-        const hasVoted = userVotes.includes(id);
-        return (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              const newUserVotes = [...userVotes];
-              let newVotes = votes;
-              if (hasVoted) {
-                newVotes = Math.max(0, votes - 1);
-                const idx = newUserVotes.indexOf(id);
-                if (idx > -1) newUserVotes.splice(idx, 1);
-              } else {
-                newVotes = votes + 1;
-                newUserVotes.push(id);
-              }
-              try { localStorage.setItem('nodecraft_votes', JSON.stringify(newUserVotes)); } catch { /* ignore quota */ }
-              updateNodeData(id, { votes: newVotes });
-            }}
-            className={`absolute -top-3.5 -right-3.5 rounded-full px-2 py-0.5 text-[10px] font-extrabold shadow-md border z-30 transition-transform hover:scale-110 flex items-center gap-0.5 cursor-pointer no-print ${hasVoted ? 'bg-rose-500 border-rose-600 text-white' : 'bg-white dark:bg-slate-800 border-rose-200 dark:border-rose-700 text-rose-500'}`}
-            title={hasVoted ? "Remove Vote" : "Click to vote"}
-          >
-            ❤️ {votes}
-          </button>
-        );
-      })()}
+      {typeof votes === 'number' && votes > 0 && <VoteBadge id={id} votes={votes} />}
 
       {/* Reactions Overlay */}
-      {reactions && Object.keys(reactions).length > 0 && (() => {
-        const userReactions = safeReadJSON<Record<string, string[]>>('nodecraft_reactions', {});
-        const nodeReactions = userReactions[id] || [];
-
-        return (
-          <div className="absolute -top-6 left-2 flex gap-1 z-30 flex-wrap max-w-[90%] pointer-events-none no-print">
-            {Object.entries(reactions).map(([emoji, count]) => {
-              if (count <= 0) return null;
-              const hasReacted = nodeReactions.includes(emoji);
-              return (
-                <button
-                  key={emoji}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const freshUserReactions = safeReadJSON<Record<string, string[]>>('nodecraft_reactions', {});
-                    const freshNodeReactions = freshUserReactions[id] || [];
-                    const newNodeReactions = [...freshNodeReactions];
-                    let newCount = count;
-                    if (hasReacted) {
-                      newCount = Math.max(0, count - 1);
-                      const idx = newNodeReactions.indexOf(emoji);
-                      if (idx > -1) newNodeReactions.splice(idx, 1);
-                    } else {
-                      newCount = count + 1;
-                      newNodeReactions.push(emoji);
-                    }
-                    freshUserReactions[id] = newNodeReactions;
-                    try { localStorage.setItem('nodecraft_reactions', JSON.stringify(freshUserReactions)); } catch { /* ignore quota */ }
-
-                    const nextReactions = { ...reactions };
-                    if (newCount <= 0) {
-                      delete nextReactions[emoji];
-                    } else {
-                      nextReactions[emoji] = newCount;
-                    }
-                    updateNodeData(id, { reactions: nextReactions });
-                  }}
-                  className={`px-1.5 py-0.5 rounded-full text-[10px] border shadow-sm font-medium pointer-events-auto hover:scale-105 transition-transform ${hasReacted ? 'bg-blue-500 text-white border-blue-600' : 'bg-white dark:bg-slate-800 border-gray-200 dark:border-gray-700 text-gray-700 dark:text-gray-300'}`}
-                >
-                  {emoji} <span className="text-[8px] font-bold opacity-75">{count}</span>
-                </button>
-              );
-            })}
-          </div>
-        );
-      })()}
+      {reactions && Object.keys(reactions).length > 0 && <ReactionsBar id={id} reactions={reactions} />}
 
       <TagsOverlay tags={tags} />
     </>
   );
-};
+});
 
-function ShapeNodeInner({ id, data, selected }: NodeProps) {
+function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeight }: NodeProps) {
   const [isEditing, setIsEditing] = useState(false);
-  const [text, setText] = useState(data.label as string);
+  const [text, setText] = useState((data.label as string) || '');
   const [imageError, setImageError] = useState(false);
   const updateNodeData = useDiagramStore((state) => state.updateNodeData);
   const theme = useDiagramStore((state) => state.theme);
+  const { showToast } = useToast();
+  // Tracks whether label editing is active so Escape can cancel the edit
+  // without committing in-progress text (blur may fire with stale text after unmount).
+  const editingRef = useRef(false);
   // textarea ref is used by most shapes (rectangle, sticky, circle, card, image caption).
   const inputRef = useRef<HTMLTextAreaElement>(null);
   // Frame title uses a single-line <input>, so it needs its own ref type.
@@ -216,7 +242,11 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
   const shapeData = data as ShapeNodeData;
   const { shapeType, color, borderColor, borderWidth, fontSize, align, bold, italic, textColor, fontFamily, locked, tags, reactions, votes, assignee, dueDate, status, stickerEmoji, notes, rotation } = shapeData;
 
-  const getFontFamilyStyle = () => {
+  const isTextOnly = shapeType === 'text';
+  const isDiamond = shapeType === 'diamond';
+  const isCircle = shapeType === 'circle';
+
+  const fontFamilyStyle = useMemo(() => {
     switch (fontFamily) {
       case 'serif':
         return 'Georgia, Cambria, "Times New Roman", Times, serif';
@@ -227,6 +257,20 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
       default: // sans
         return 'system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
     }
+  }, [fontFamily]);
+
+  const startEditing = () => {
+    editingRef.current = true;
+    setIsEditing(true);
+  };
+
+  const cancelEditing = () => {
+    // Escape: restore the original label without committing in-progress text.
+    editingRef.current = false;
+    const original = (shapeData.label as string) || '';
+    setText(original);
+    setIsEditing(false);
+    updateNodeData(id, { label: original });
   };
 
   useEffect(() => {
@@ -243,19 +287,32 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
   }, [isEditing]);
 
   useEffect(() => {
-    setText(shapeData.label);
+    setText((shapeData.label as string) || '');
   }, [shapeData.label]);
+
+  // Reset the editor if the node's shape type changes while it is mounted.
+  useEffect(() => {
+    setIsEditing(false);
+    editingRef.current = false;
+  }, [shapeType]);
 
   useEffect(() => {
     setImageError(false);
   }, [shapeData.imageUrl]);
 
   const handleBlur = () => {
+    if (!editingRef.current) return;
+    editingRef.current = false;
     setIsEditing(false);
     updateNodeData(id, { label: text });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditing();
+      return;
+    }
     if (e.key === 'Enter' && !e.shiftKey) {
       e.preventDefault();
       inputRef.current?.blur();
@@ -263,27 +320,28 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
   };
 
   const handleFrameKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      cancelEditing();
+      return;
+    }
     if (e.key === 'Enter') {
       e.preventDefault();
       frameInputRef.current?.blur();
     }
   };
 
-  const isTextOnly = shapeType === 'text';
-  const isDiamond = shapeType === 'diamond';
-  const isCircle = shapeType === 'circle';
-
   const getStickyFontSize = (textStr: string) => {
-    const len = textStr.length;
+    const len = (textStr || '').length;
     if (len < 20) return 18;
     if (len < 60) return 14;
     if (len < 120) return 11;
     return 9;
   };
 
-  const textStyle: React.CSSProperties = {
+  const textStyle: React.CSSProperties = useMemo(() => ({
     // For stickies, respect an explicit user-set fontSize first; only auto-size if none.
-    fontSize: `${shapeType === 'sticky' ? (fontSize || getStickyFontSize(text)) : (fontSize || 14)}px`,
+    fontSize: `${shapeType === 'sticky' ? (fontSize || getStickyFontSize(text || '')) : (fontSize || 14)}px`,
     textAlign: align || 'center',
     fontWeight: bold ? 'bold' : 'normal',
     fontStyle: italic ? 'italic' : 'normal',
@@ -292,16 +350,65 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
     wordBreak: 'break-word' as const,
     width: isDiamond ? '100%' : undefined,
     padding: isDiamond ? '8px' : undefined,
-    fontFamily: getFontFamilyStyle(),
-  };
+    fontFamily: fontFamilyStyle,
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }), [shapeType, fontSize, text, align, bold, italic, textColor, isTextOnly, theme, isDiamond, fontFamilyStyle]);
 
   const gradient = colorGradients[color || '#ffffff'] || colorGradients['#ffffff'];
   const shapeStyle = shapeStyles[shapeType] || shapeStyles.rectangle;
+
+  // Standard shapes (rectangle, sticky, text) base style — defined before the
+  // per-shape early returns so Hook call order stays stable across shape types.
+  const baseStyle: React.CSSProperties = useMemo(() => ({
+    background: isTextOnly ? 'transparent' : `linear-gradient(135deg, ${gradient[0]}, ${gradient[1]})`,
+    borderColor: isTextOnly ? 'transparent' : (borderColor || '#cbd5e1'),
+    borderWidth: isTextOnly ? '0px' : `${borderWidth || 2}px`,
+    borderStyle: 'solid',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: shapeType === 'sticky' ? '12px 12px 16px 12px' : '10px',
+    boxShadow: selected 
+      ? '0 0 0 2px #3b82f6, 0 4px 12px rgba(0, 0, 0, 0.1)' 
+      : shapeType === 'sticky'
+        ? '2px 3px 8px rgba(0,0,0,0.12), 0 1px 3px rgba(0,0,0,0.08)'
+        : '0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06)',
+    transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
+    width: '100%',
+    height: '100%',
+    position: 'relative',
+  }), [isTextOnly, gradient, borderColor, borderWidth, shapeType, selected]);
+
+  const resolvedShapeStyle: React.CSSProperties = useMemo(() => {
+    const shape = { ...baseStyle };
+
+    if (isTextOnly) {
+      shape.borderRadius = '4px';
+    } else if (shapeType === 'sticky') {
+      shape.borderRadius = '2px';
+      shape.borderBottomRightRadius = '24px';
+      shape.alignItems = 'flex-start';
+    } else if (shapeType === 'portal') {
+      shape.borderRadius = '50%';
+      shape.background = 'radial-gradient(circle at center, #3b82f6 0%, #1e3a8a 50%, #0f172a 100%)';
+      shape.border = '2px solid #60a5fa';
+      shape.boxShadow = '0 0 30px rgba(59, 130, 246, 0.6), inset 0 0 20px rgba(0, 0, 0, 0.8)';
+    } else {
+      shape.borderRadius = shapeStyle.borderRadius;
+    }
+
+    return shape;
+  }, [baseStyle, isTextOnly, shapeType, shapeStyle.borderRadius]);
 
   // Freehand Pen Drawing shape
   if (shapeType === 'drawing') {
     return (
       <>
+        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+
         <NodeResizer 
           color="#3b82f6" 
           isVisible={selected && !locked} 
@@ -309,12 +416,21 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
           minHeight={40} 
           lineClassName="stroke-blue-500"
         />
+
+        {locked && (
+          <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
+          </div>
+        )}
+
         <div className="w-full h-full relative pointer-events-none select-none">
+          {/* Node width/height live on the node itself (see store), not in data. */}
           <svg 
             width="100%" 
             height="100%" 
-            viewBox={`0 0 ${shapeData.width || 100} ${shapeData.height || 80}`}
+            viewBox={`0 0 ${nodeWidth || 100} ${nodeHeight || 80}`}
             preserveAspectRatio="none"
+            aria-hidden="true"
           >
             <path
               d={shapeData.svgPath || ''}
@@ -334,6 +450,11 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
   if (shapeType === 'sticker') {
     return (
       <>
+        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+
         <NodeResizer 
           color="#3b82f6" 
           isVisible={selected && !locked} 
@@ -341,16 +462,24 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
           minHeight={50} 
           lineClassName="stroke-blue-500"
         />
+
+        {locked && (
+          <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
+          </div>
+        )}
+
         <div 
           className="w-full h-full flex items-center justify-center select-none animate-in zoom-in-50 duration-200"
           style={{
             fontSize: `${fontSize || 54}px`,
             filter: 'drop-shadow(0 4px 6px rgba(0, 0, 0, 0.15)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1))',
             transform: typeof rotation === 'number' ? `rotate(${rotation}deg)` : 'rotate(-5deg)',
-            cursor: 'grab'
           }}
+          role="img"
+          aria-label={`Sticker: ${stickerEmoji || 'star'}`}
         >
-          {stickerEmoji || '⭐'}
+          <span aria-hidden="true">{stickerEmoji || '⭐'}</span>
         </div>
       </>
     );
@@ -375,7 +504,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
 
         {locked && (
           <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-            <Lock size={10} strokeWidth={3} />
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
 
@@ -390,11 +519,11 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
             alignItems: 'center',
             justifyContent: 'center',
           }}
-          onDoubleClick={() => !locked && setIsEditing(true)}
+          onDoubleClick={() => !locked && startEditing()}
           className="group/node"
         >
           {/* SVG Diamond geometry */}
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full" style={{ overflow: 'visible' }}>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full" style={{ overflow: 'visible' }} aria-hidden="true">
             <defs>
               <linearGradient id={`grad-${id}`} x1="0%" y1="0%" x2="100%" y2="100%">
                 <stop offset="0%" stopColor={gradient[0]} />
@@ -442,7 +571,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
             ) : (
               <div 
                 className="select-none pointer-events-none break-words px-1 w-full"
-                onDoubleClick={() => !locked && setIsEditing(true)}
+                onDoubleClick={() => !locked && startEditing()}
                 style={{ ...textStyle, transform: undefined, width: undefined, padding: undefined }}
               >
                 {text || 'Decision'}
@@ -474,7 +603,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
 
         {locked && (
           <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-            <Lock size={10} strokeWidth={3} />
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
 
@@ -489,11 +618,11 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
             alignItems: 'center',
             justifyContent: 'center',
           }}
-          onDoubleClick={() => !locked && setIsEditing(true)}
+          onDoubleClick={() => !locked && startEditing()}
           className="group/node"
         >
           {/* SVG Cylinder geometry */}
-          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full" style={{ overflow: 'visible' }}>
+          <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="absolute inset-0 w-full h-full" style={{ overflow: 'visible' }} aria-hidden="true">
             <defs>
               <linearGradient id={`cyl-grad-${id}`} x1="0%" y1="0%" x2="0%" y2="100%">
                 <stop offset="0%" stopColor={gradient[0]} />
@@ -581,14 +710,19 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
       // Validate file type and size (2MB limit to avoid localStorage blow-up)
       if (!file.type.startsWith('image/')) {
         setImageError(true);
+        showToast('Unsupported file type — please select an image', 'error');
         return;
       }
       if (file.size > 2 * 1024 * 1024) {
         setImageError(true);
+        showToast('Image too large (max 2 MB)', 'error');
         return;
       }
       const reader = new FileReader();
-      reader.onerror = () => setImageError(true);
+      reader.onerror = () => {
+        setImageError(true);
+        showToast('Failed to read image file', 'error');
+      };
       reader.onloadend = () => {
         const result = reader.result as string;
         // Only allow data:image base64 (from FileReader) — block other schemes
@@ -597,6 +731,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
           setImageError(false);
         } else {
           setImageError(true);
+          showToast('Unsupported image data', 'error');
         }
       };
       reader.readAsDataURL(file);
@@ -626,7 +761,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
 
         {locked && (
           <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-            <Lock size={10} strokeWidth={3} />
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
 
@@ -682,7 +817,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
                 className="absolute bottom-0 left-0 right-0 bg-slate-900/60 backdrop-blur-xs p-1 text-center pointer-events-auto"
                 onDoubleClick={(e) => {
                   e.stopPropagation();
-                  if (!locked) setIsEditing(true);
+                  if (!locked) startEditing();
                 }}
               >
                 {isEditing ? (
@@ -735,7 +870,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
 
         {locked && (
           <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-            <Lock size={10} strokeWidth={3} />
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
 
@@ -760,7 +895,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
             transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
             position: 'relative',
           }}
-          onDoubleClick={() => !locked && setIsEditing(true)}
+          onDoubleClick={() => !locked && startEditing()}
           className="group/node"
         >
           {isEditing ? (
@@ -805,7 +940,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
         
         {locked && (
           <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-            <Lock size={10} strokeWidth={3} />
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
 
@@ -837,7 +972,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
               pointerEvents: 'auto',
               cursor: 'move',
             }}
-            onDoubleClick={() => !locked && setIsEditing(true)}
+            onDoubleClick={() => !locked && startEditing()}
           >
             {isEditing ? (
               <input
@@ -847,10 +982,10 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
                 onBlur={handleBlur}
                 onKeyDown={handleFrameKeyDown}
                 className="nodrag bg-transparent border-none outline-none text-white font-bold w-full"
-                style={{ fontSize: `${fontSize || 18}px`, fontFamily: getFontFamilyStyle() }}
+                style={{ fontSize: `${fontSize || 18}px`, fontFamily: fontFamilyStyle }}
               />
             ) : (
-              <span style={{ fontSize: `${fontSize || 18}px`, fontFamily: getFontFamilyStyle() }}>
+              <span style={{ fontSize: `${fontSize || 18}px`, fontFamily: fontFamilyStyle }}>
                 {text}
               </span>
             )}
@@ -887,7 +1022,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
 
         {locked && (
           <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-            <Lock size={10} strokeWidth={3} />
+            <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
 
@@ -906,7 +1041,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
             position: 'relative',
             textAlign: 'left'
           }}
-          onDoubleClick={() => !locked && setIsEditing(true)}
+          onDoubleClick={() => !locked && startEditing()}
           className="dark:bg-slate-800 dark:border-slate-700"
         >
           {/* Header row */}
@@ -935,12 +1070,12 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
                 onKeyDown={handleKeyDown}
                 placeholder="Task Card"
                 className="nodrag w-full bg-transparent border-none outline-none resize-none overflow-hidden text-gray-800 dark:text-gray-200 font-semibold"
-                style={{ fontSize: `${fontSize || 12}px`, fontFamily: getFontFamilyStyle() }}
+                style={{ fontSize: `${fontSize || 12}px`, fontFamily: fontFamilyStyle }}
                 rows={2}
               />
             ) : (
               <div 
-                style={{ fontSize: `${fontSize || 12}px`, fontFamily: getFontFamilyStyle() }} 
+                style={{ fontSize: `${fontSize || 12}px`, fontFamily: fontFamilyStyle }} 
                 className="select-none pointer-events-none break-words font-semibold text-gray-800 dark:text-gray-200 line-clamp-2"
               >
                 {text || 'Task Card'}
@@ -970,48 +1105,6 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
     );
   }
 
-  // Standard shapes (rectangle, sticky, text)
-  const baseStyle: React.CSSProperties = {
-    background: isTextOnly ? 'transparent' : `linear-gradient(135deg, ${gradient[0]}, ${gradient[1]})`,
-    borderColor: isTextOnly ? 'transparent' : (borderColor || '#cbd5e1'),
-    borderWidth: isTextOnly ? '0px' : `${borderWidth || 2}px`,
-    borderStyle: 'solid',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    padding: shapeType === 'sticky' ? '12px 12px 16px 12px' : '10px',
-    boxShadow: selected 
-      ? '0 0 0 2px #3b82f6, 0 4px 12px rgba(0, 0, 0, 0.1)' 
-      : shapeType === 'sticky'
-        ? '2px 3px 8px rgba(0,0,0,0.12), 0 1px 3px rgba(0,0,0,0.08)'
-        : '0 2px 8px rgba(0, 0, 0, 0.08), 0 1px 3px rgba(0, 0, 0, 0.06)',
-    transition: 'box-shadow 0.2s ease, border-color 0.2s ease',
-    width: '100%',
-    height: '100%',
-    position: 'relative',
-  };
-
-  const getShapeStyle = (): React.CSSProperties => {
-    const shape = { ...baseStyle };
-    
-    if (isTextOnly) {
-      shape.borderRadius = '4px';
-    } else if (shapeType === 'sticky') {
-      shape.borderRadius = '2px';
-      shape.borderBottomRightRadius = '24px';
-      shape.alignItems = 'flex-start';
-    } else if (shapeType === 'portal') {
-      shape.borderRadius = '50%';
-      shape.background = 'radial-gradient(circle at center, #3b82f6 0%, #1e3a8a 50%, #0f172a 100%)';
-      shape.border = '2px solid #60a5fa';
-      shape.boxShadow = '0 0 30px rgba(59, 130, 246, 0.6), inset 0 0 20px rgba(0, 0, 0, 0.8)';
-    } else {
-      shape.borderRadius = shapeStyle.borderRadius;
-    }
-    
-    return shape;
-  };
-
   return (
     <>
       {!isTextOnly && (
@@ -1033,19 +1126,19 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
 
       {locked && (
         <div className="absolute -top-2 -right-2 bg-white dark:bg-slate-800 border border-gray-200 dark:border-gray-700 rounded-full p-1 shadow-md z-20 text-amber-500">
-          <Lock size={10} strokeWidth={3} />
+          <Lock size={10} strokeWidth={3} aria-hidden="true" />
         </div>
       )}
 
       <QuickAddOverlay nodeId={id} selected={selected} locked={!!locked} />
 
       <div
-        style={getShapeStyle()}
+        style={resolvedShapeStyle}
         onDoubleClick={() => {
           if (shapeType === 'portal') {
             useDiagramStore.getState().setActiveCanvasId(id);
           } else if (!locked) {
-            setIsEditing(true);
+            startEditing();
           }
         }}
         className="group/node"
@@ -1072,7 +1165,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
                 if (shapeType === 'portal') {
                   useDiagramStore.getState().setActiveCanvasId(id);
                 } else if (!locked) {
-                  setIsEditing(true);
+                  startEditing();
                 }
               }}
             >
@@ -1093,30 +1186,41 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
       {shapeData.ideaOrbits && shapeData.ideaOrbits.length > 0 && (
         <div className="absolute inset-0 pointer-events-none z-50 flex items-center justify-center">
           {shapeData.ideaOrbits.map((idea, index) => {
-            const delay = (index * 10) / shapeData.ideaOrbits!.length;
+            const delay = (index * 10) / (shapeData.ideaOrbits?.length || 1);
+            const detachIdea = () => {
+              const newOrbits = (shapeData.ideaOrbits || []).filter((_, i) => i !== index);
+              updateNodeData(id, { ideaOrbits: newOrbits });
+
+              const node = useDiagramStore.getState().nodes.find(n => n.id === id);
+              if (!node) return;
+
+              useDiagramStore.getState().addNode('sticky', {
+                x: node.position.x + 150 + (Math.random() * 50),
+                y: node.position.y + (Math.random() * 100 - 50)
+              }, { label: idea });
+            };
             return (
               <div 
                 key={`${idea}-${index}`}
                 className="absolute orbit-pill pointer-events-auto cursor-pointer group/orbit"
                 style={{ animationDelay: `-${delay}s` }}
+                role="button"
+                tabIndex={0}
+                aria-label={`Detach idea "${idea}" and spawn a sticky note`}
                 onClick={(e) => {
                   e.stopPropagation();
-                  // Detach orbit
-                  const newOrbits = shapeData.ideaOrbits!.filter((_, i) => i !== index);
-                  updateNodeData(id, { ideaOrbits: newOrbits });
-                  
-                  // Spawn new node
-                  const node = useDiagramStore.getState().nodes.find(n => n.id === id);
-                  if (!node) return;
-                  
-                  useDiagramStore.getState().addNode('sticky', { 
-                    x: node.position.x + 150 + (Math.random() * 50), 
-                    y: node.position.y + (Math.random() * 100 - 50) 
-                  }, { label: idea });
+                  detachIdea();
                 }}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                  e.preventDefault();
+                  e.stopPropagation();
+                  detachIdea();
+                }
+              }}
               >
                 <div className="bg-purple-100 dark:bg-purple-900 border border-purple-300 dark:border-purple-700 text-purple-800 dark:text-purple-200 text-[10px] font-semibold px-2 py-1 rounded-full shadow-md hover:scale-110 hover:bg-purple-200 dark:hover:bg-purple-800 transition-all whitespace-nowrap">
-                  ✨ {idea}
+                  <span aria-hidden="true">✨</span> {idea}
                 </div>
               </div>
             );
@@ -1129,7 +1233,7 @@ function ShapeNodeInner({ id, data, selected }: NodeProps) {
   );
 }
 
-export function ShapeNode(props: NodeProps) {
+function ShapeNodeBase(props: NodeProps) {
   const activeFilterTag = useDiagramStore((state) => state.activeFilterTag);
   const data = props.data as ShapeNodeData;
   const tags = (data?.tags as string[] | undefined) || [];
@@ -1158,6 +1262,8 @@ export function ShapeNode(props: NodeProps) {
     </div>
   );
 }
+
+export const ShapeNode = memo(ShapeNodeBase);
 
 // Re-export the ShapeNodeType alias for consumers that need it.
 export type { ShapeNodeType };

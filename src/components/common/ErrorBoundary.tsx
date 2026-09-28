@@ -32,6 +32,21 @@ export class ErrorBoundary extends Component<Props, State> {
     window.location.reload();
   };
 
+  private handleResetLocalData = () => {
+    const confirmed = window.confirm(
+      'Reset local NodeCraft data? This clears the locally cached workspace ' +
+      '(nodecraft-storage). Projects synced to a server are not affected.'
+    );
+    if (!confirmed) return;
+    try {
+      // Zustand persist key used by the diagram store.
+      localStorage.removeItem('nodecraft-storage');
+    } catch {
+      /* storage unavailable — reload anyway */
+    }
+    window.location.reload();
+  };
+
   public render() {
     if (this.state.hasError) {
       return (
@@ -60,6 +75,12 @@ export class ErrorBoundary extends Component<Props, State> {
                 Reload Page
               </button>
             </div>
+            <button
+              onClick={this.handleResetLocalData}
+              className="mt-2 w-full py-2 px-4 bg-red-50 hover:bg-red-100 dark:bg-red-900/20 dark:hover:bg-red-900/40 text-red-600 dark:text-red-400 border border-red-200 dark:border-red-800/40 rounded font-medium text-sm transition-colors"
+            >
+              Reset Local Data (if the crash persists)
+            </button>
             <p className="text-[11px] text-slate-400 dark:text-slate-500 mt-3 text-center">
               Your diagram is auto-saved to localStorage, so reloading is safe.
             </p>

@@ -12,6 +12,9 @@ const __dirname = path.dirname(__filename);
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Don't advertise the framework
+app.disable('x-powered-by');
+
 // Trust proxy (for correct req.ip behind Nginx/Cloudflare) — needed for rate limiter
 app.set('trust proxy', 1);
 
@@ -53,8 +56,9 @@ const corsOptions = process.env.CLIENT_ORIGIN
   : { origin: defaultOrigin, credentials: true };
 app.use(cors(corsOptions));
 
-// Simple in-memory rate limiter (no external dep)
-function createRateLimiter({ windowMs, max, message }) {
+// Simple in-memory rate limiter (no external dep).
+// `keyFn` lets callers add dimensions to the limit key (e.g. username).
+function createRateLimiter({ windowMs, max, message, keyFn }) {
   const hits = new Map(); // ip -> { count, resetTime }
   // Periodic cleanup to avoid memory leak
   const interval = setInterval(() => {
@@ -67,11 +71,14 @@ function createRateLimiter({ windowMs, max, message }) {
 
   return (req, res, next) => {
     const ip = req.ip || req.socket.remoteAddress || 'unknown';
+    // Optional extra key dimension (e.g. username) so limits are per-identity,
+    // not just per-IP.
+    const key = keyFn ? `${ip}::${keyFn(req)}` : ip;
     const now = Date.now();
-    let entry = hits.get(ip);
+    let entry = hits.get(key);
     if (!entry || entry.resetTime <= now) {
       entry = { count: 0, resetTime: now + windowMs };
-      hits.set(ip, entry);
+      hits.set(key, entry);
     }
     entry.count += 1;
     if (entry.count > max) {
@@ -92,6 +99,10 @@ const authLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 20,
   message: 'Too many auth attempts — please try again in 15 minutes.',
+  // Key by IP + username: one shared IP (NAT/office) can't lock out every
+  // user behind it, and rotating IPs can't dodge per-username brute-force
+  // limits. (req.body is populated — express.json() runs before this.)
+  keyFn: (req) => String(req.body?.username || '').trim().toLowerCase(),
 });
 
 app.use(express.json({ limit: '5mb' }));
@@ -135,6 +146,19 @@ app.use((req, res) => {
   } else {
     res.status(404).send('Frontend build not found');
   }
+});
+
+// Final error handler — must come last. Without it, any error thrown by a
+// route handler (or the catch-all above) falls through to Express' default
+// handler, which leaks a stack trace in production and returns HTML instead
+// of JSON to API clients.
+app.use((err, req, res, next) => {
+  if (res.headersSent) return next(err);
+  console.error('Unhandled error:', err);
+  const isProduction = process.env.NODE_ENV === 'production';
+  res.status(err.status || err.statusCode || 500).json({
+    error: isProduction ? 'Internal server error' : (err.message || 'Internal server error'),
+  });
 });
 
 app.listen(PORT, () => {
