@@ -27,6 +27,9 @@ playwright-report/
 .env.*.local
 .venv/
 
+# Local assistant workspace
+/.hermes/
+
 # Logs
 logs/
 *.log
