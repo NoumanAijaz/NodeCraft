@@ -237,18 +237,7 @@ export function MultiSelectToolbar() {
       {/* Delete */}
       <button
         onClick={() => {
-          const store = useDiagramStore.getState();
-          const { edges } = store;
-          const nodeIds = new Set(selectedNodes.map(n => n.id));
-          // Exit portal canvas if the active portal node is being deleted
-          if (store.activeCanvasId && nodeIds.has(store.activeCanvasId)) {
-            store.setActiveCanvasId(null);
-          }
-          const edgesToRemove = edges.filter(e => nodeIds.has(e.source) || nodeIds.has(e.target));
-          store.onNodesChange(Array.from(nodeIds).map(id => ({ type: 'remove', id })));
-          if (edgesToRemove.length > 0) {
-            store.onEdgesChange(edgesToRemove.map(e => ({ type: 'remove', id: e.id })));
-          }
+          useDiagramStore.getState().deleteNodes(selectedNodes.map(n => n.id));
         }}
         className="toolbar-btn p-1.5 rounded-lg text-gray-400 dark:text-gray-500 hover:bg-red-50 dark:hover:bg-red-900/30 hover:text-red-500 dark:hover:text-red-400 transition-all ml-0.5"
         title="Delete selection"

@@ -1,6 +1,6 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
-import { useDiagramStore } from '../store/useDiagramStore';
+import { getDiagramData, useDiagramStore } from '../store/useDiagramStore';
 import { api } from '../utils/api';
 import { TopNav } from './layout/TopNav';
 import { Sidebar } from './layout/Sidebar';
@@ -18,6 +18,7 @@ export const ProjectEditor: React.FC = () => {
 
   useEffect(() => {
     if (!id) return;
+    let current = true;
 
     const fetchProject = async () => {
       try {
@@ -25,19 +26,22 @@ export const ProjectEditor: React.FC = () => {
         setError(null);
 
         const res = await api.get(`/projects/${id}`);
+        if (!current) return;
         if (res.project) {
           loadProject(res.project.data);
           setProjectDetails(res.project.id, res.project.name);
         }
       } catch (err: any) {
+        if (!current) return;
         console.error('Failed to load project:', err);
         setError(err.message || 'Failed to load project from server');
       } finally {
-        setLoading(false);
+        if (current) setLoading(false);
       }
     };
 
     fetchProject();
+    return () => { current = false; };
   }, [id, loadProject, setProjectDetails]);
 
   // Warn user before closing tab if there are unsaved changes (Chrome requires returnValue)
@@ -47,7 +51,7 @@ export const ProjectEditor: React.FC = () => {
       const state = useDiagramStore.getState();
       // If we have a saved snapshot, compare directly; otherwise fall back to default-node check
       if (state.lastSavedSnapshot) {
-        const current = JSON.stringify({ nodes: state.nodes, edges: state.edges });
+        const current = JSON.stringify(getDiagramData(state));
         if (current === state.lastSavedSnapshot) return;
       } else {
         const isDefaultSingleNode =
@@ -93,7 +97,7 @@ export const ProjectEditor: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-gray-100 overflow-hidden">
-      {!presentationMode && <TopNav />}
+      <TopNav />
       <div className="flex-1 flex min-h-0 relative">
         {!presentationMode && <Sidebar />}
         <main className="flex-1 relative h-full">

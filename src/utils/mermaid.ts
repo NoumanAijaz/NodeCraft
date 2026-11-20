@@ -39,15 +39,9 @@ const ARROW_PATTERNS: ArrowPattern[] = [
 
 function stripLabel(raw: string | undefined): string {
   if (!raw) return '';
-  return raw
-    .replace(/^\["(.*)"\]$/, '$1')
-    .replace(/^\[(.*)\]$/, '$1')
+  const delimiters = raw.startsWith('((') || raw.startsWith('[(') ? 2 : 1;
+  return raw.slice(delimiters, -delimiters)
     .replace(/^"(.*)"$/, '$1')
-    .replace(/^\("(.*)"\)$/, '$1')
-    .replace(/^\{(.*)\}$/, '$1')
-    .replace(/^\(\((.*)\)\)$/, '$1')
-    .replace(/^\[\((.*)\)\]$/, '$1')
-    .replace(/^\((.*)\)$/, '$1')
     .trim();
 }
 
@@ -169,7 +163,8 @@ export function parseMermaid(text: string): MermaidParseResult {
           animated: Boolean(matchedArrow.dotted),
         });
 
-        s = afterArrow.slice(targetMatch[0].length);
+        // Retain target node as source for the next link in a chain (e.g. A --> B --> C)
+        s = afterArrow;
       }
     }
   }
@@ -215,15 +210,18 @@ export function parseMermaid(text: string): MermaidParseResult {
   }
 
   const vertical = direction === 'TD' || direction === 'TB' || direction === 'BT';
+  const inverted = direction === 'BT' || direction === 'RL';
   const ALONG_SPACING = 240;
   const ACROSS_SPACING = 180;
   const ORIGIN = 100;
+  const maxRank = ranks.size > 0 ? Math.max(...ranks.keys()) : 0;
 
   const positions = new Map<string, { x: number; y: number }>();
   for (const [r, members] of [...ranks.entries()].sort((a, b) => a[0] - b[0])) {
+    const effectiveRank = inverted ? maxRank - r : r;
     members.forEach((id, idx) => {
       const along = idx * ALONG_SPACING;
-      const across = r * ACROSS_SPACING;
+      const across = effectiveRank * ACROSS_SPACING;
       positions.set(
         id,
         vertical

@@ -9,10 +9,17 @@ dist-ssr/
 
 # Server runtime data & user project files (keeps folder structure intact)
 server/data/*.db
+server/data/*.db-wal
+server/data/*.db-shm
 server/data/*.json
 server/data/*.tmp
 server/projects/*
 !server/projects/.gitkeep
+
+# Test artifacts
+test-results/
+playwright-report/
+
 
 # Environment & Python virtual environments
 .env

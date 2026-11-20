@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { useDiagramStore } from '../../store/useDiagramStore';
+import { useDiagramStore, getAbsolutePosition } from '../../store/useDiagramStore';
 import type { ShapeType } from '../../types/diagram';
 import { Square, Circle, Diamond, StickyNote, Type, Database, Image as ImageIcon, PanelTop, CreditCard, LayoutList, Locate, Search, ChevronRight } from 'lucide-react';
 
@@ -26,9 +26,11 @@ export function Sidebar() {
   const frameNodes = nodes
     .filter(n => n.type === 'shape' && (n.data as any).shapeType === 'frame')
     .sort((a, b) => {
-      const yDiff = a.position.y - b.position.y;
+      const posA = getAbsolutePosition(a, nodes);
+      const posB = getAbsolutePosition(b, nodes);
+      const yDiff = posA.y - posB.y;
       if (Math.abs(yDiff) > 50) return yDiff;
-      return a.position.x - b.position.x;
+      return posA.x - posB.x;
     });
   
   const handleFrameClick = (frameId: string) => {
@@ -38,8 +40,9 @@ export function Sidebar() {
     // may be stale while `frame.measured.width` reflects the actual on-screen size.
     const w = frame.measured?.width || frame.width || 400;
     const h = frame.measured?.height || frame.height || 400;
+    const absPos = getAbsolutePosition(frame, nodes);
     rfInstance.fitBounds(
-      { x: frame.position.x, y: frame.position.y, width: w, height: h },
+      { x: absPos.x, y: absPos.y, width: w, height: h },
       { duration: 800, padding: 0.1 }
     );
   };

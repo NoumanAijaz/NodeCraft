@@ -42,9 +42,10 @@ function getTimeoutSignal(): AbortSignal | undefined {
   return undefined;
 }
 
-async function parseJsonResponse(res: Response, endpoint?: string) {
-  const isAuthAttempt = endpoint ? endpoint.includes('/auth/login') || endpoint.includes('/auth/register') : false;
-  if ((res.status === 401 || res.status === 403) && !isAuthAttempt) {
+async function parseJsonResponse(res: Response, endpoint: string, authorization?: string) {
+  const isAuthAttempt = endpoint.includes('/auth/login') || endpoint.includes('/auth/register');
+  if ((res.status === 401 || res.status === 403) && !isAuthAttempt &&
+    authorization === getHeaders().Authorization) {
     localStorage.removeItem('nodecraft_token');
     localStorage.removeItem('nodecraft_user');
     window.dispatchEvent(new Event('auth-unauthorized'));
@@ -82,40 +83,44 @@ async function parseJsonResponse(res: Response, endpoint?: string) {
 
 export const api = {
   async get<T = any>(endpoint: string): Promise<T> {
+    const headers = getHeaders();
     const res = await fetch(`${API_BASE}${endpoint}`, {
       method: 'GET',
-      headers: getHeaders(false),
+      headers,
       signal: getTimeoutSignal(),
     });
-    return parseJsonResponse(res, endpoint);
+    return parseJsonResponse(res, endpoint, headers.Authorization);
   },
 
   async post<T = any>(endpoint: string, body: any): Promise<T> {
+    const headers = getHeaders(true);
     const res = await fetch(`${API_BASE}${endpoint}`, {
       method: 'POST',
-      headers: getHeaders(true),
+      headers,
       body: JSON.stringify(body),
       signal: getTimeoutSignal(),
     });
-    return parseJsonResponse(res, endpoint);
+    return parseJsonResponse(res, endpoint, headers.Authorization);
   },
 
   async put<T = any>(endpoint: string, body: any): Promise<T> {
+    const headers = getHeaders(true);
     const res = await fetch(`${API_BASE}${endpoint}`, {
       method: 'PUT',
-      headers: getHeaders(true),
+      headers,
       body: JSON.stringify(body),
       signal: getTimeoutSignal(),
     });
-    return parseJsonResponse(res, endpoint);
+    return parseJsonResponse(res, endpoint, headers.Authorization);
   },
 
   async delete<T = any>(endpoint: string): Promise<T> {
+    const headers = getHeaders();
     const res = await fetch(`${API_BASE}${endpoint}`, {
       method: 'DELETE',
-      headers: getHeaders(false),
+      headers,
       signal: getTimeoutSignal(),
     });
-    return parseJsonResponse(res, endpoint);
+    return parseJsonResponse(res, endpoint, headers.Authorization);
   },
 };

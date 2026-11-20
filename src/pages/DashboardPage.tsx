@@ -95,9 +95,9 @@ export const DashboardPage: React.FC = () => {
     if (!editingName.trim()) return;
 
     try {
-      await api.put(`/projects/${id}/rename`, { name: editingName.trim() });
+      const { name, updatedAt } = await api.put<{ name: string; updatedAt: string }>(`/projects/${id}/rename`, { name: editingName.trim() });
       setProjects((prev) =>
-        prev.map((p) => (p.id === id ? { ...p, name: editingName.trim() } : p))
+        prev.map((p) => (p.id === id ? { ...p, name, updated_at: updatedAt } : p))
       );
       setEditingId(null);
       showToast('Renamed successfully', 'success');

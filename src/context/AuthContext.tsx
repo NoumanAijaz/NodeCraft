@@ -66,11 +66,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
       try {
         const data = await api.get('/auth/me');
-        if (cancelled) return;
+        if (cancelled || localStorage.getItem('nodecraft_token') !== storedToken) return;
         setUser(data.user);
         setToken(storedToken);
       } catch (err) {
-        if (cancelled) return;
+        if (cancelled || localStorage.getItem('nodecraft_token') !== storedToken) return;
         console.error('Failed to restore session:', err);
         localStorage.removeItem('nodecraft_token');
         localStorage.removeItem('nodecraft_user');

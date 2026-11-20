@@ -1,6 +1,7 @@
-import { useState, useRef, useEffect, useCallback } from 'react';
+import { useState, useRef, useEffect, useCallback, useMemo } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useDiagramStore } from '../../store/useDiagramStore';
+import { useShallow } from 'zustand/react/shallow';
+import { useDiagramStore, getAbsolutePosition, getDiagramData } from '../../store/useDiagramStore';
 import type { FileSystemFileHandle } from '../../types/diagram';
 import { api } from '../../utils/api';
 import { 
@@ -54,6 +55,7 @@ function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () =
 }
 
 const isMac = typeof window !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
+const pendingCloudSaves = new Map<string, Promise<unknown>>();
 
 export function TopNav() {
   const navigate = useNavigate();
@@ -68,6 +70,7 @@ export function TopNav() {
   const projectId = useDiagramStore((state) => state.projectId);
   const projectName = useDiagramStore((state) => state.projectName);
   const setFileDetails = useDiagramStore((state) => state.setFileDetails);
+  const setProjectDetails = useDiagramStore((state) => state.setProjectDetails);
   const loadProject = useDiagramStore((state) => state.loadProject);
   const triggerShakeToAlign = useDiagramStore((state) => state.triggerShakeToAlign);
   const loadTemplate = useDiagramStore((state) => state.loadTemplate);
@@ -80,6 +83,9 @@ export function TopNav() {
   const setIsLocked = useDiagramStore((state) => state.setIsLocked);
   const lastSavedSnapshot = useDiagramStore((state) => state.lastSavedSnapshot);
   const markSaved = useDiagramStore((state) => state.markSaved);
+  const presentationMode = useDiagramStore((state) => state.presentationMode);
+  const diagramData = useDiagramStore(useShallow(getDiagramData));
+  const currentSnapshot = useMemo(() => JSON.stringify(diagramData), [diagramData]);
   
   const { showToast } = useToast();
   const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
@@ -188,11 +194,12 @@ export function TopNav() {
 
   const handleNavigate = (node: RFNode) => {
     if (reactFlowInstance && typeof reactFlowInstance.setCenter === 'function') {
-      const x = node.position.x + (node.measured?.width || node.width || 100) / 2;
-      const y = node.position.y + (node.measured?.height || node.height || 80) / 2;
+      const { nodes: allNodes } = useDiagramStore.getState();
+      const absPos = getAbsolutePosition(node, allNodes);
+      const x = absPos.x + (node.measured?.width || node.width || 100) / 2;
+      const y = absPos.y + (node.measured?.height || node.height || 80) / 2;
       reactFlowInstance.setCenter(x, y, { zoom: 1.2, duration: 800 });
       
-      const { nodes: allNodes } = useDiagramStore.getState();
       useDiagramStore.setState({
         nodes: allNodes.map((n) => ({
           ...n,
@@ -208,19 +215,46 @@ export function TopNav() {
     }
   };
 
-  const handleNew = () => {
-    // Use a safer dirty-check: if there's any content beyond a single default
-    // "Start Here" node, prompt before discarding.
-    const isDirty = nodes.length > 1 ||
+  const handleNew = async () => {
+    // Dirtiness check: if state is already saved to snapshot, avoid false warning;
+    // otherwise check for any non-default content (multiple nodes, custom label, or connected edges).
+    const hasEdges = edges.length > 0;
+    const hasNonDefaultNodes = nodes.length > 1 ||
       (nodes.length === 1 && (nodes[0].data as { label?: string })?.label !== 'Start Here');
+
+    let isDirty = false;
+    if (lastSavedSnapshot) {
+      const current = currentSnapshot;
+      isDirty = current !== lastSavedSnapshot;
+    } else {
+      isDirty = hasEdges || hasNonDefaultNodes;
+    }
+
     if (isDirty) {
       if (!confirm('Create new diagram? Any unsaved changes will be lost.')) {
         return;
       }
     }
+    setMenuOpen(false);
+
+    if (projectId) {
+      try {
+        const res = await api.post('/projects', { name: 'Untitled Diagram' });
+        if (res.project && res.project.id) {
+          showToast('Created new project', 'success');
+          navigate(`/project/${res.project.id}`);
+          return;
+        }
+      } catch (err: any) {
+        console.error('Failed to create project:', err);
+        showToast(err?.message || 'Failed to create new project', 'error');
+        return;
+      }
+    }
+
     clearCanvas();
     setFileDetails(null, null);
-    setMenuOpen(false);
+    setProjectDetails(null, null);
   };
 
   const handleOpen = async () => {
@@ -274,57 +308,65 @@ export function TopNav() {
   // Monotonic save revision: lets a stale save detect that a newer save
   // started after it, so it can skip settling the status (see below).
   const saveRevisionRef = useRef(0);
+  useEffect(() => () => { saveRevisionRef.current += 1; }, []);
 
   const handleCloudSave = useCallback(async (silent = false) => {
     if (!projectId) return;
     // Monotonic revision so a stale save that resolves AFTER a newer save
     // started can't clobber the newer status/snapshot (out-of-order resolves).
     const revision = ++saveRevisionRef.current;
+    let request: Promise<unknown> | undefined;
     try {
       setSaveStatus('saving');
       const state = useDiagramStore.getState();
-      const diagramData = {
-        nodes: state.nodes,
-        edges: state.edges,
-        theme: state.theme,
-        snapToGrid: state.snapToGrid,
-        gridSize: state.gridSize,
-        boardNotes: state.boardNotes,
-        gridType: state.gridType,
-        canvasColor: state.canvasColor,
-      };
+      const diagramData = getDiagramData(state);
       // Snapshot the EXACT payload being uploaded — taking it after the await
       // would mark mid-save edits as saved without uploading them.
-      const snapshot = JSON.stringify({ nodes: state.nodes, edges: state.edges });
+      const snapshot = JSON.stringify(diagramData);
 
-      await api.put(`/projects/${projectId}`, {
+      const send = () => api.put(`/projects/${projectId}`, {
         data: diagramData,
         name: projectName || 'Untitled Diagram',
       });
+      // Serialize writes even if the editor unmounts and reopens the same project.
+      const previous = pendingCloudSaves.get(projectId);
+      request = previous ? previous.then(send, send) : send();
+      pendingCloudSaves.set(projectId, request);
+      await request;
 
       // A newer save started after this one — its outcome (and its
       // markSaved/setSaveStatus) is authoritative; don't clobber it.
-      if (revision !== saveRevisionRef.current) return;
+      if (revision !== saveRevisionRef.current || useDiagramStore.getState().projectId !== projectId) return;
       markSaved(snapshot);
       setSaveStatus('saved');
       if (!silent) {
         showToast('Saved to cloud', 'success');
       }
     } catch (err) {
-      if (revision !== saveRevisionRef.current) return;
+      if (revision !== saveRevisionRef.current || useDiagramStore.getState().projectId !== projectId) return;
       console.error('Failed to save project:', err);
       setSaveStatus('unsaved');
       if (!silent) {
         showToast('Failed to save to cloud', 'error');
       }
+    } finally {
+      if (pendingCloudSaves.get(projectId) === request) pendingCloudSaves.delete(projectId);
     }
   }, [projectId, projectName, showToast, markSaved]);
+
+  useEffect(() => {
+    const save = () => {
+      if (projectId) void handleCloudSave();
+      else showToast('No cloud project open', 'warning');
+    };
+    window.addEventListener('nodecraft-save-cloud', save);
+    return () => window.removeEventListener('nodecraft-save-cloud', save);
+  }, [projectId, handleCloudSave, showToast]);
 
   // 3-second debounced auto-save effect — skip when no actual edits since last save/load
   useEffect(() => {
     if (!projectId) return;
-    const current = JSON.stringify({ nodes, edges });
-    if (lastSavedSnapshot && current === lastSavedSnapshot) {
+    if (lastSavedSnapshot && currentSnapshot === lastSavedSnapshot) {
       setSaveStatus('saved');
       return;
     }
@@ -334,7 +376,7 @@ export function TopNav() {
     }, 3000);
 
     return () => clearTimeout(timer);
-  }, [nodes, edges, projectId, handleCloudSave, lastSavedSnapshot]);
+  }, [currentSnapshot, projectId, handleCloudSave, lastSavedSnapshot]);
 
   const saveToFileHandle = async (handle: FileSystemFileHandle) => {
     let writable: FileSystemWritableFileStream | undefined;
@@ -512,7 +554,8 @@ export function TopNav() {
       
       const link = document.createElement('a');
       link.href = url;
-      link.download = fileName ? `${fileName.replace(/\.json$/, '')}.json` : 'nodecraft-project.json';
+      const baseName = (projectName || fileName || 'nodecraft-project').replace(/\.json$/, '');
+      link.download = `${baseName}.json`;
       document.body.appendChild(link);
       link.click();
       document.body.removeChild(link);
@@ -585,6 +628,7 @@ export function TopNav() {
   });
 
   useEffect(() => {
+    if (presentationMode) return;
     const handleFileShortcuts = (e: KeyboardEvent) => {
       if (e.target instanceof HTMLElement) {
         if (
@@ -617,9 +661,11 @@ export function TopNav() {
 
     window.addEventListener('keydown', handleFileShortcuts);
     return () => window.removeEventListener('keydown', handleFileShortcuts);
-  }, []);
+  }, [presentationMode]);
   const btnClass = "p-1.5 text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-800 hover:text-gray-700 dark:hover:text-gray-200 rounded-md transition-all active:scale-95";
   const textBtnClass = "flex items-center gap-1.5 px-2.5 py-1.5 text-xs font-medium text-gray-600 dark:text-gray-300 hover:bg-gray-100 dark:hover:bg-slate-800 rounded-md transition-all active:scale-95";
+
+  if (presentationMode) return null;
 
   return (
     <nav className="h-11 border-b border-gray-200/80 dark:border-gray-800/80 bg-white/90 dark:bg-slate-900/90 backdrop-blur-sm flex items-center justify-between px-3 z-50 relative">

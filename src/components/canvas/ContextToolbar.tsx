@@ -144,6 +144,26 @@ export function ContextToolbar() {
             <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500 w-5 text-right">{currentWidth}</span>
           </div>
 
+          <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+
+          {/* Snap to Center */}
+          <button
+            onClick={() => {
+              updateEdge(selectedEdge.id, {
+                data: {
+                  ...((selectedEdge.data as Record<string, any>) || {}),
+                  sourceRatio: 0.5,
+                  targetRatio: 0.5,
+                },
+              });
+            }}
+            className="toolbar-btn flex items-center gap-1.5 px-2.5 py-1 text-xs font-semibold rounded-lg transition-all bg-gray-100 hover:bg-gray-200 dark:bg-slate-700 dark:hover:bg-slate-600 text-gray-700 dark:text-gray-200 shadow-xs"
+            title="Snap connection points back to face centers"
+          >
+            <AlignCenter size={14} className="text-blue-500" />
+            <span>Center Ends</span>
+          </button>
+
           <div className="flex-grow" />
           
           <button 
@@ -301,127 +321,175 @@ export function ContextToolbar() {
     <Panel position="top-center" className="glass-panel border border-gray-200/60 dark:border-gray-700/40 rounded-2xl shadow-2xl p-3 flex flex-col gap-2.5 z-50 animate-dropdown-in mt-4 transition-colors max-w-2xl">
       {/* Row 1: Shape Type, Typography, Styling, Layering, Duplicate, Delete */}
       <div className="flex items-center flex-wrap gap-2.5 pb-2.5 border-b border-gray-100 dark:border-gray-700/30">
-        {/* Shape Type Converter */}
-        <select 
-          value={data.shapeType || 'rectangle'} 
-          onChange={(e) => {
-            const newType = e.target.value as ShapeNodeData['shapeType'];
-            const dims = getDefaultNodeDimensions(newType);
-            // Clear portalId when converting away from portal so node becomes visible on main canvas
-            const prevType = data.shapeType;
-            if (prevType === 'portal' && newType !== 'portal') {
-              updateNodeData(nodeId, { shapeType: newType, portalId: null as unknown as string } as Partial<ShapeNodeData>);
-            } else {
-              updateNodeData(nodeId, { shapeType: newType });
-            }
-            // Also update the node's dimensions so React Flow re-measures.
-            const { nodes } = useDiagramStore.getState();
-            useDiagramStore.setState({
-              nodes: nodes.map(n =>
-                n.id === nodeId
-                  ? { ...n, width: dims.width, height: dims.height }
-                  : n
-              ),
-            });
-          }}
-          className="text-xs bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800/40 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500 text-blue-600 dark:text-blue-400 font-bold cursor-pointer transition-shadow"
-          title="Convert Shape Type"
-        >
-          <option value="rectangle">Rectangle</option>
-          <option value="circle">Circle</option>
-          <option value="diamond">Diamond</option>
-          <option value="cylinder">Database</option>
-          <option value="sticky">Sticky Note</option>
-          <option value="text">Text Block</option>
-          <option value="frame">Frame</option>
-          <option value="card">Task Card</option>
-        </select>
+        {data.shapeType === 'sticker' ? (
+          <>
+            {/* Quick Sticker Emoji Picker */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Sticker</span>
+              {['👍', '❤️', '💡', '🔥', '⭐', '❌', '🎉', '❓'].map((emoji) => (
+                <button
+                  key={emoji}
+                  onClick={() => updateNodeData(nodeId, { stickerEmoji: emoji, label: emoji })}
+                  className={`w-7 h-7 flex items-center justify-center text-sm rounded-lg transition-transform hover:scale-125 ${data.stickerEmoji === emoji ? 'bg-blue-100 dark:bg-blue-900/40 ring-2 ring-blue-500 scale-110 shadow-xs' : 'hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                  title={`Switch to ${emoji}`}
+                >
+                  {emoji}
+                </button>
+              ))}
+            </div>
 
-        <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5" />
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
 
-        {/* Font Family */}
-        <select 
-          value={data.fontFamily || 'sans'} 
-          onChange={(e) => updateNodeData(nodeId, { fontFamily: e.target.value as any })}
-          className="text-xs bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 font-medium transition-shadow"
-        >
-          <option value="sans">Sans-serif</option>
-          <option value="serif">Serif</option>
-          <option value="mono">Monospace</option>
-          <option value="handwriting">Handwriting</option>
-        </select>
+            {/* Quick Rotate Buttons */}
+            <div className="flex items-center gap-1 shrink-0">
+              {[-15, 0, 15].map((deg) => (
+                <button
+                  key={deg}
+                  onClick={() => updateNodeData(nodeId, { rotation: deg })}
+                  className={`toolbar-btn px-1.5 py-0.5 text-[10px] font-mono rounded transition-all ${(data.rotation || 0) === deg ? 'bg-blue-500 text-white font-bold' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                  title={`Rotate ${deg}°`}
+                >
+                  {deg > 0 ? `+${deg}°` : `${deg}°`}
+                </button>
+              ))}
+            </div>
 
-        {/* Font Size */}
-        <select 
-          value={data.fontSize || 14} 
-          onChange={(e) => updateNodeData(nodeId, { fontSize: parseInt(e.target.value) })}
-          className="text-xs bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 transition-shadow"
-        >
-          {[10, 12, 14, 16, 18, 20, 24, 28].map(size => <option key={size} value={size}>{size}px</option>)}
-        </select>
-        
-        {/* Text Color */}
-        <input 
-          type="color"
-          value={data.textColor || (theme === 'dark' ? '#ffffff' : '#000000')}
-          onChange={(e) => updateNodeData(nodeId, { textColor: e.target.value })}
-          className="w-6 h-6 p-0 border-0 rounded cursor-pointer bg-transparent"
-          title="Text Color"
-        />
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
 
-        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+            {/* Lock */}
+            <button 
+              onClick={() => updateNodeData(nodeId, { locked: !data.locked })}
+              className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.locked ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+              title={data.locked ? "Unlock shape" : "Lock shape"}
+            >
+              {data.locked ? <Lock size={15} /> : <Unlock size={15} />}
+            </button>
+          </>
+        ) : (
+          <>
+            {/* Shape Type Converter */}
+            <select 
+              value={data.shapeType || 'rectangle'} 
+              onChange={(e) => {
+                const newType = e.target.value as ShapeNodeData['shapeType'];
+                const dims = getDefaultNodeDimensions(newType);
+                // Clear portalId when converting away from portal so node becomes visible on main canvas
+                const prevType = data.shapeType;
+                if (prevType === 'portal' && newType !== 'portal') {
+                  updateNodeData(nodeId, { shapeType: newType, portalId: null as unknown as string } as Partial<ShapeNodeData>);
+                } else {
+                  updateNodeData(nodeId, { shapeType: newType });
+                }
+                // Also update the node's dimensions so React Flow re-measures.
+                const { nodes } = useDiagramStore.getState();
+                useDiagramStore.setState({
+                  nodes: nodes.map(n =>
+                    n.id === nodeId
+                      ? { ...n, width: dims.width, height: dims.height }
+                      : n
+                  ),
+                });
+              }}
+              className="text-xs bg-blue-50 dark:bg-blue-900/30 border border-blue-200 dark:border-blue-800/40 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500 text-blue-600 dark:text-blue-400 font-bold cursor-pointer transition-shadow"
+              title="Convert Shape Type"
+            >
+              <option value="rectangle">Rectangle</option>
+              <option value="circle">Circle</option>
+              <option value="diamond">Diamond</option>
+              <option value="cylinder">Database</option>
+              <option value="sticky">Sticky Note</option>
+              <option value="text">Text Block</option>
+              <option value="frame">Frame</option>
+              <option value="card">Task Card</option>
+            </select>
 
-        {/* Bold / Italic / Lock */}
-        <div className="flex gap-0.5 shrink-0">
-          <button 
-            onClick={() => updateNodeData(nodeId, { bold: !data.bold })}
-            className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.bold ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-            title="Bold"
-          >
-            <Bold size={15} />
-          </button>
-          <button 
-            onClick={() => updateNodeData(nodeId, { italic: !data.italic })}
-            className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.italic ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-            title="Italic"
-          >
-            <Italic size={15} />
-          </button>
-          <button 
-            onClick={() => updateNodeData(nodeId, { locked: !data.locked })}
-            className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.locked ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-            title={data.locked ? "Unlock shape" : "Lock shape"}
-          >
-            {data.locked ? <Lock size={15} /> : <Unlock size={15} />}
-          </button>
-        </div>
+            <div className="w-px h-4 bg-gray-200 dark:bg-gray-700 mx-0.5" />
 
-        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+            {/* Font Family */}
+            <select 
+              value={data.fontFamily || 'sans'} 
+              onChange={(e) => updateNodeData(nodeId, { fontFamily: e.target.value as any })}
+              className="text-xs bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 font-medium transition-shadow"
+            >
+              <option value="sans">Sans-serif</option>
+              <option value="serif">Serif</option>
+              <option value="mono">Monospace</option>
+              <option value="handwriting">Handwriting</option>
+            </select>
 
-        {/* Text Alignment */}
-        <div className="flex gap-0.5 shrink-0">
-          <button
-            onClick={() => updateNodeData(nodeId, { align: 'left' })}
-            className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.align === 'left' ? 'bg-white dark:bg-slate-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-            title="Align Left"
-          >
-            <AlignLeft size={15} />
-          </button>
-          <button
-            onClick={() => updateNodeData(nodeId, { align: 'center' })}
-            className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.align === 'center' || !data.align ? 'bg-white dark:bg-slate-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-            title="Align Center"
-          >
-            <AlignCenter size={15} />
-          </button>
-          <button 
-            onClick={() => updateNodeData(nodeId, { align: 'right' })}
-            className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.align === 'right' ? 'bg-white dark:bg-slate-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
-            title="Align Right"
-          >
-            <AlignRight size={15} />
-          </button>
-        </div>
+            {/* Font Size */}
+            <select 
+              value={data.fontSize || 14} 
+              onChange={(e) => updateNodeData(nodeId, { fontSize: parseInt(e.target.value) })}
+              className="text-xs bg-gray-50 dark:bg-slate-700 border border-gray-200 dark:border-gray-600 rounded-lg px-2 py-1 outline-none focus:ring-2 focus:ring-blue-500 text-gray-900 dark:text-gray-100 transition-shadow"
+            >
+              {[10, 12, 14, 16, 18, 20, 24, 28].map(size => <option key={size} value={size}>{size}px</option>)}
+            </select>
+            
+            {/* Text Color */}
+            <input 
+              type="color"
+              value={data.textColor || (theme === 'dark' ? '#ffffff' : '#000000')}
+              onChange={(e) => updateNodeData(nodeId, { textColor: e.target.value })}
+              className="w-6 h-6 p-0 border-0 rounded cursor-pointer bg-transparent"
+              title="Text Color"
+            />
+
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+
+            {/* Bold / Italic / Lock */}
+            <div className="flex gap-0.5 shrink-0">
+              <button 
+                onClick={() => updateNodeData(nodeId, { bold: !data.bold })}
+                className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.bold ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                title="Bold"
+              >
+                <Bold size={15} />
+              </button>
+              <button 
+                onClick={() => updateNodeData(nodeId, { italic: !data.italic })}
+                className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.italic ? 'bg-blue-50 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                title="Italic"
+              >
+                <Italic size={15} />
+              </button>
+              <button 
+                onClick={() => updateNodeData(nodeId, { locked: !data.locked })}
+                className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.locked ? 'bg-amber-50 dark:bg-amber-900/30 text-amber-600 dark:text-amber-400 shadow-sm' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                title={data.locked ? "Unlock shape" : "Lock shape"}
+              >
+                {data.locked ? <Lock size={15} /> : <Unlock size={15} />}
+              </button>
+            </div>
+
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+
+            {/* Text Alignment */}
+            <div className="flex gap-0.5 shrink-0">
+              <button
+                onClick={() => updateNodeData(nodeId, { align: 'left' })}
+                className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.align === 'left' ? 'bg-white dark:bg-slate-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                title="Align Left"
+              >
+                <AlignLeft size={15} />
+              </button>
+              <button
+                onClick={() => updateNodeData(nodeId, { align: 'center' })}
+                className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.align === 'center' || !data.align ? 'bg-white dark:bg-slate-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                title="Align Center"
+              >
+                <AlignCenter size={15} />
+              </button>
+              <button 
+                onClick={() => updateNodeData(nodeId, { align: 'right' })}
+                className={`toolbar-btn p-1.5 rounded-lg transition-all ${data.align === 'right' ? 'bg-white dark:bg-slate-600 shadow-sm text-blue-600 dark:text-blue-400' : 'text-gray-500 dark:text-gray-400 hover:bg-gray-100 dark:hover:bg-slate-700'}`}
+                title="Align Right"
+              >
+                <AlignRight size={15} />
+              </button>
+            </div>
+          </>
+        )}
 
         <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
 
@@ -494,16 +562,7 @@ export function ContextToolbar() {
         {/* Delete */}
         <button 
           onClick={() => {
-            const store = useDiagramStore.getState();
-            if (store.activeCanvasId === selectedNode.id) {
-              store.setActiveCanvasId(null);
-            }
-            const { edges } = store;
-            const edgesToRemove = edges.filter(e => e.source === selectedNode.id || e.target === selectedNode.id);
-            store.onNodesChange([{ type: 'remove', id: selectedNode.id }]);
-            if (edgesToRemove.length > 0) {
-              store.onEdgesChange(edgesToRemove.map(e => ({ type: 'remove', id: e.id })));
-            }
+            useDiagramStore.getState().deleteNode(selectedNode.id);
           }}
           className="toolbar-btn p-1.5 rounded-lg text-red-400 hover:text-red-600 hover:bg-red-50 dark:hover:bg-red-900/30 transition-all shrink-0"
           title="Delete Shape"
@@ -514,69 +573,73 @@ export function ContextToolbar() {
 
       {/* Row 2: Colors, Border, Opacity, Tags, Reactions, Cards */}
       <div className="flex items-center flex-wrap gap-3">
-        {/* Background Color */}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Fill</span>
-          {colors.map((c) => (
-            <button
-              key={c}
-              onClick={() => updateNodeData(nodeId, { color: c })}
-              className={`w-4 h-4 rounded-full border shadow-xs transition-all hover:scale-125 hover:shadow-md ${data.color === c ? 'ring-2 ring-blue-500 ring-offset-1 dark:ring-offset-slate-800 scale-110' : 'border-gray-300 dark:border-gray-600'}`}
-              style={{ backgroundColor: c === 'transparent' ? 'transparent' : c, backgroundImage: c === 'transparent' ? 'repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundPosition: '0 0, 3px 3px', backgroundSize: '6px 6px' }}
-              title={`Fill ${c}`}
-            />
-          ))}
-          <input 
-            type="color"
-            value={data.color === 'transparent' ? '#ffffff' : (data.color || '#ffffff')}
-            onChange={(e) => updateNodeData(nodeId, { color: e.target.value })}
-            className="w-5 h-5 p-0 border-0 rounded cursor-pointer bg-transparent"
-            title="Custom Fill Color"
-          />
-        </div>
+        {data.shapeType !== 'sticker' && (
+          <>
+            {/* Background Color */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Fill</span>
+              {colors.map((c) => (
+                <button
+                  key={c}
+                  onClick={() => updateNodeData(nodeId, { color: c })}
+                  className={`w-4 h-4 rounded-full border shadow-xs transition-all hover:scale-125 hover:shadow-md ${data.color === c ? 'ring-2 ring-blue-500 ring-offset-1 dark:ring-offset-slate-800 scale-110' : 'border-gray-300 dark:border-gray-600'}`}
+                  style={{ backgroundColor: c === 'transparent' ? 'transparent' : c, backgroundImage: c === 'transparent' ? 'repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundPosition: '0 0, 3px 3px', backgroundSize: '6px 6px' }}
+                  title={`Fill ${c}`}
+                />
+              ))}
+              <input 
+                type="color"
+                value={data.color === 'transparent' ? '#ffffff' : (data.color || '#ffffff')}
+                onChange={(e) => updateNodeData(nodeId, { color: e.target.value })}
+                className="w-5 h-5 p-0 border-0 rounded cursor-pointer bg-transparent"
+                title="Custom Fill Color"
+              />
+            </div>
 
-        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
 
-        {/* Border Color */}
-        <div className="flex items-center gap-1 shrink-0">
-          <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Border</span>
-          {borderColors.slice(0, 8).map((c) => (
-             <button
-               key={c}
-               onClick={() => updateNodeData(nodeId, { borderColor: c })}
-               className={`w-3.5 h-3.5 rounded-sm border shadow-xs transition-all hover:scale-125 hover:shadow-md ${data.borderColor === c ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-white dark:ring-offset-slate-800 scale-110' : 'border-gray-300 dark:border-gray-600'}`}
-               style={{ backgroundColor: c === 'transparent' ? 'transparent' : c, backgroundImage: c === 'transparent' ? 'repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundPosition: '0 0, 3px 3px', backgroundSize: '6px 6px' }}
-               title={`Border ${c}`}
-             />
-          ))}
-          <input 
-            type="color"
-            value={data.borderColor === 'transparent' ? '#000000' : (data.borderColor || '#94a3b8')}
-            onChange={(e) => updateNodeData(nodeId, { borderColor: e.target.value })}
-            className="w-4 h-4 p-0 border-0 rounded cursor-pointer bg-transparent"
-            title="Custom Border Color"
-          />
-        </div>
+            {/* Border Color */}
+            <div className="flex items-center gap-1 shrink-0">
+              <span className="text-[10px] font-bold text-gray-400 dark:text-gray-500 uppercase tracking-wider mr-1">Border</span>
+              {borderColors.slice(0, 8).map((c) => (
+                 <button
+                   key={c}
+                   onClick={() => updateNodeData(nodeId, { borderColor: c })}
+                   className={`w-3.5 h-3.5 rounded-sm border shadow-xs transition-all hover:scale-125 hover:shadow-md ${data.borderColor === c ? 'ring-2 ring-blue-500 ring-offset-1 ring-offset-white dark:ring-offset-slate-800 scale-110' : 'border-gray-300 dark:border-gray-600'}`}
+                   style={{ backgroundColor: c === 'transparent' ? 'transparent' : c, backgroundImage: c === 'transparent' ? 'repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc), repeating-linear-gradient(45deg, #ccc 25%, transparent 25%, transparent 75%, #ccc 75%, #ccc)' : 'none', backgroundPosition: '0 0, 3px 3px', backgroundSize: '6px 6px' }}
+                   title={`Border ${c}`}
+                 />
+              ))}
+              <input 
+                type="color"
+                value={data.borderColor === 'transparent' ? '#000000' : (data.borderColor || '#94a3b8')}
+                onChange={(e) => updateNodeData(nodeId, { borderColor: e.target.value })}
+                className="w-4 h-4 p-0 border-0 rounded cursor-pointer bg-transparent"
+                title="Custom Border Color"
+              />
+            </div>
 
-        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
 
-        {/* Border Width */}
-        <div className="flex items-center gap-1.5 shrink-0">
-          <Square size={12} className="text-gray-400" />
-          <input
-            type="range"
-            min="0"
-            max="8"
-            step="1"
-            value={nodeBorderWidth}
-            onChange={(e) => updateNodeData(nodeId, { borderWidth: parseInt(e.target.value) })}
-            className="w-12 h-1.5 bg-gray-200 dark:bg-slate-600 rounded-full appearance-none cursor-pointer accent-blue-500"
-            title={`Border width: ${nodeBorderWidth}px`}
-          />
-          <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500 w-3 text-right">{nodeBorderWidth}</span>
-        </div>
+            {/* Border Width */}
+            <div className="flex items-center gap-1.5 shrink-0">
+              <Square size={12} className="text-gray-400" />
+              <input
+                type="range"
+                min="0"
+                max="8"
+                step="1"
+                value={nodeBorderWidth}
+                onChange={(e) => updateNodeData(nodeId, { borderWidth: parseInt(e.target.value) })}
+                className="w-12 h-1.5 bg-gray-200 dark:bg-slate-600 rounded-full appearance-none cursor-pointer accent-blue-500"
+                title={`Border width: ${nodeBorderWidth}px`}
+              />
+              <span className="text-[10px] font-mono text-gray-400 dark:text-gray-500 w-3 text-right">{nodeBorderWidth}</span>
+            </div>
 
-        <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+            <div className="w-px h-5 bg-gray-200 dark:bg-gray-700 shrink-0" />
+          </>
+        )}
 
         {/* Node Opacity */}
         <div className="flex items-center gap-1.5 shrink-0">

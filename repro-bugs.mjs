@@ -16,7 +16,7 @@ const env = { ...process.env, PORT: String(PORT), JWT_SECRET: 'repro-test-secret
 const dataDir = path.join(__dirname, 'server', 'data');
 const projectsDir = path.join(__dirname, 'server', 'projects');
 const backups = new Map();
-for (const f of ['users.json', 'projects.json']) {
+for (const f of ['users.json', 'projects.json', 'nodecraft.db', 'nodecraft.db-wal', 'nodecraft.db-shm']) {
   const p = path.join(dataDir, f);
   if (fs.existsSync(p)) backups.set(p, fs.readFileSync(p));
 }
@@ -28,9 +28,10 @@ const check = (name, cond, detail = '') => {
   if (!cond) failures++;
 };
 
-const server = spawn('node', ['server/index.js'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+const server = spawn(process.execPath, ['server/index.js'], { env, cwd: __dirname, stdio: ['ignore', 'pipe', 'pipe'] });
+server.on('error', (err) => console.error('Failed to spawn server:', err));
 await new Promise((resolve, reject) => {
-  const t = setTimeout(() => reject(new Error('server did not start')), 15000);
+  const t = setTimeout(() => reject(new Error('server did not start')), 30000);
   server.stdout.on('data', (d) => { if (String(d).includes('NodeCraft Server running')) { clearTimeout(t); resolve(); } });
   server.stderr.on('data', (d) => process.stderr.write(d));
 });
@@ -84,12 +85,36 @@ try {
   let ok3 = false; try { const j = JSON.parse(t3); ok3 = (r.status === 201 && !!j.project) || (r.status >= 400 && r.status < 500); } catch {}
   check('POST /projects with no body does not 500', r.status !== 500 && ok3, `status=${r.status} body=${t3.slice(0, 80)}`);
 
+  // BUG D (empty/non-alphanumeric project id): must not access .ncraft dotfile
+  r = await fetch(`${BASE}/api/projects/$$$`, { headers: H });
+  check('GET /projects/$$$ returns 404', r.status === 404, `status=${r.status}`);
+  r = await fetch(`${BASE}/api/projects/$$$/versions`, { headers: H });
+  check('GET /projects/$$$/versions returns 404', r.status === 404, `status=${r.status}`);
+
   // Regression: rename + restore roundtrip still work
   r = await fetch(`${BASE}/api/projects/${projectId}/rename`, { method: 'PUT', headers: H, body: JSON.stringify({ name: 'renamed' }) });
   check('rename valid name 200', r.status === 200, `status=${r.status}`);
   r = await fetch(`${BASE}/api/projects/${projectId}/versions/1/restore`, { method: 'POST', headers: H, body: JSON.stringify({}) });
   const rest = await r.json().catch(() => ({}));
   check('restore v1 200 + name reverted', r.status === 200 && rest.name === 'repro', `status=${r.status} name=${rest.name}`);
+
+  // BUG E (Template endpoints): POST /projects with template='database' creates 3 cylinder schema nodes with hex colors
+  r = await fetch(`${BASE}/api/projects`, {
+    method: 'POST',
+    headers: H,
+    body: JSON.stringify({ name: 'db-test', template: 'database' })
+  });
+  const dbProj = await r.json().catch(() => ({}));
+  const dbProjId = dbProj.project?.id;
+  check('create database template project 201', r.status === 201 && !!dbProjId, `status=${r.status}`);
+  if (dbProjId) {
+    const fileR = await fetch(`${BASE}/api/projects/${dbProjId}`, { headers: H });
+    const fileJson = await fileR.json().catch(() => ({}));
+    const nodes = fileJson.project?.data?.nodes || [];
+    check('database template contains 3 cylinder nodes', nodes.length === 3 && nodes.every((n) => n.data?.shapeType === 'cylinder'), `nodes=${nodes.length}`);
+    check('database template nodes use hex colors', nodes.every((n) => !n.data?.color || n.data.color.startsWith('#')), `colors=${nodes.map((n) => n.data?.color)}`);
+    await fetch(`${BASE}/api/projects/${dbProjId}`, { method: 'DELETE', headers: H }).catch(() => {});
+  }
 } finally {
   try {
     if (projectId && token) {

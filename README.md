@@ -43,14 +43,14 @@
 | **State & History** | Zustand 5 + `zundo` (temporal undo/redo middleware) |
 | **Styling** | Tailwind CSS 3, Lucide Icons |
 | **Backend API** | Node.js, Express.js 5 |
-| **Database & Auth** | File-based JSON Database, `bcryptjs`, `jsonwebtoken` |
+| **Database & Auth** | SQLite metadata, diagram files, `bcryptjs`, `jsonwebtoken` |
 
 ---
 
 ## 🚀 Quick Start
 
 ### Prerequisites
-- [Node.js](https://nodejs.org/) (v18 or higher)
+- [Node.js](https://nodejs.org/) (v24 recommended)
 - [pnpm](https://pnpm.io/) (recommended) or `npm`
 
 ### Installation

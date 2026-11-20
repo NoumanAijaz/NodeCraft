@@ -1,4 +1,4 @@
-// Admin CLI: reset (or create) a user's password directly in the JSON database.
+// Admin CLI: reset (or create) a user's password directly in the database.
 // Usage:
 //   node server/reset-password.mjs <username> <newPassword>
 //   node server/reset-password.mjs <username> --generate          (prints a random one)
@@ -8,6 +8,7 @@ import path from 'path';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import bcrypt from 'bcryptjs';
+import db from './db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const usersFile = path.join(__dirname, 'data', 'users.json');
@@ -15,31 +16,15 @@ const usersFile = path.join(__dirname, 'data', 'users.json');
 const args = process.argv.slice(2);
 const createIfMissing = args.includes('--create');
 const generate = args.includes('--generate');
-const positional = args.filter(a => !a.startsWith('--'));
+const positional = args.filter((a) => !a.startsWith('--'));
 const [username, passwordArg] = positional;
 if (!username || (!passwordArg && !generate)) {
   console.error('Usage: node server/reset-password.mjs <username> <newPassword|--generate> [--create]');
   process.exit(1);
 }
 
-if (!fs.existsSync(usersFile)) {
-  console.error(`Database not found at ${usersFile}`);
-  process.exit(1);
-}
-
-// Strip any UTF-8 BOM so PowerShell-written files still parse
-let raw = fs.readFileSync(usersFile, 'utf8').replace(/^\uFEFF/, '');
-let users;
-try {
-  users = JSON.parse(raw);
-  if (!Array.isArray(users)) throw new Error('not an array');
-} catch (e) {
-  console.error('Failed to parse users.json:', e.message);
-  process.exit(1);
-}
-
 const cleanUsername = username.trim().toLowerCase();
-let user = users.find(u => u.username === cleanUsername);
+const user = db.sqlite.prepare('SELECT * FROM users WHERE username = ?').get(cleanUsername);
 
 const newPassword = generate
   ? crypto.randomBytes(9).toString('base64url') // ~12 chars, URL-safe
@@ -50,30 +35,52 @@ if (newPassword.length < 8) {
   process.exit(1);
 }
 
+const passwordHash = await bcrypt.hash(newPassword, 10);
+
+let userId = user?.id;
 if (!user && createIfMissing) {
-  const nextId = users.reduce((max, u) => Math.max(max, u.id || 0), 0) + 1;
-  user = {
-    id: nextId,
-    username: cleanUsername,
-    password_hash: '',
-    created_at: new Date().toISOString(),
-  };
-  users.push(user);
-  console.log(`+ Created missing user "${cleanUsername}" (id ${nextId}).`);
+  const insert = db.sqlite.prepare('INSERT INTO users (username, password_hash) VALUES (?, ?)');
+  const res = insert.run(cleanUsername, passwordHash);
+  userId = Number(res.lastInsertRowid);
+  console.log(`+ Created missing user "${cleanUsername}" (id ${res.lastInsertRowid}).`);
 } else if (!user) {
-  console.error(`User "${cleanUsername}" not found. Existing users: ${users.map(u => u.username).join(', ') || '(none)'}`);
+  const allUsers = db.sqlite.prepare('SELECT username FROM users').all();
+  console.error(
+    `User "${cleanUsername}" not found. Existing users: ${
+      allUsers.map((u) => u.username).join(', ') || '(none)'
+    }`
+  );
   console.error('Add --create to recreate the account.');
   process.exit(1);
+} else {
+  db.sqlite.prepare('UPDATE users SET password_hash = ? WHERE username = ?').run(passwordHash, cleanUsername);
+  console.log(`✔ Password updated for "${cleanUsername}".`);
 }
 
-user.password_hash = await bcrypt.hash(newPassword, 10);
+// Also update legacy users.json if present
+if (fs.existsSync(usersFile)) {
+  try {
+    const raw = fs.readFileSync(usersFile, 'utf8').replace(/^\uFEFF/, '');
+    const users = JSON.parse(raw);
+    if (Array.isArray(users)) {
+      const u = users.find((x) => x.username === cleanUsername);
+      if (u) {
+        u.password_hash = passwordHash;
+      } else if (createIfMissing) {
+        users.push({
+          id: userId,
+          username: cleanUsername,
+          password_hash: passwordHash,
+          created_at: new Date().toISOString(),
+        });
+      }
+      const tmpFile = `${usersFile}.${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`;
+      fs.writeFileSync(tmpFile, JSON.stringify(users, null, 2), 'utf8');
+      fs.renameSync(tmpFile, usersFile);
+    }
+  } catch {}
+}
 
-// Atomic write WITHOUT BOM (plain utf8)
-const tmpFile = `${usersFile}.tmp`;
-fs.writeFileSync(tmpFile, JSON.stringify(users, null, 2), 'utf8');
-fs.renameSync(tmpFile, usersFile);
-
-console.log(`✔ Password updated for "${cleanUsername}".`);
 if (generate) {
   console.log(`  New password: ${newPassword}`);
 }

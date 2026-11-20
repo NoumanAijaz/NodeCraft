@@ -10,6 +10,7 @@ import {
   addEdge,
   applyNodeChanges,
   applyEdgeChanges,
+  reconnectEdge,
   MarkerType,
 } from '@xyflow/react';
 import { v4 as uuidv4 } from 'uuid';
@@ -72,6 +73,7 @@ interface DiagramStore {
   onNodesChange: (changes: NodeChange[]) => void;
   onEdgesChange: (changes: EdgeChange[]) => void;
   onConnect: (connection: Connection) => void;
+  onReconnect: (oldEdge: Edge, newConnection: Connection) => void;
   addNode: (type: ShapeType, position: { x: number; y: number }, dataOverrides?: Partial<ShapeNodeData> & { width?: number; height?: number }) => void;
   updateNodeData: (nodeId: string, data: Partial<ShapeNodeData>) => void;
   updateEdgeType: (edgeId: string, type: string) => void;
@@ -106,6 +108,8 @@ interface DiagramStore {
   gridType: 'dots' | 'lines' | 'cross';
   setGridType: (type: 'dots' | 'lines' | 'cross') => void;
   updateNodesData: (nodeIds: string[], data: Partial<ShapeNodeData>) => void;
+  deleteNodes: (nodeIds: string[]) => void;
+  deleteNode: (nodeId: string) => void;
   presentationMode: boolean;
   setPresentationMode: (active: boolean) => void;
   canvasColor: string | null;
@@ -137,7 +141,27 @@ interface DiagramStore {
   markSaved: (precomputedSnapshot?: string) => void;
 }
 
+export function getDiagramData({
+  nodes, edges, theme, snapToGrid, gridSize, boardNotes, gridType, canvasColor,
+}: Pick<DiagramStore, 'nodes' | 'edges' | 'theme' | 'snapToGrid' | 'gridSize' | 'boardNotes' | 'gridType' | 'canvasColor'>) {
+  return { nodes, edges, theme, snapToGrid, gridSize, boardNotes, gridType, canvasColor };
+}
+
 let shakeTimeoutId: ReturnType<typeof setTimeout> | null = null;
+let historyTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingHistory: (() => void) | undefined;
+
+function cancelPendingHistory() {
+  clearTimeout(historyTimer);
+  historyTimer = undefined;
+  pendingHistory = undefined;
+}
+
+function flushPendingHistory() {
+  const save = pendingHistory;
+  cancelPendingHistory();
+  save?.();
+}
 
 export const useDiagramStore = create<DiagramStore>()(
   temporal(
@@ -171,8 +195,7 @@ export const useDiagramStore = create<DiagramStore>()(
           set({ lastSavedSnapshot: precomputedSnapshot });
           return;
         }
-        const { nodes, edges } = get();
-        set({ lastSavedSnapshot: JSON.stringify({ nodes, edges }) });
+        set({ lastSavedSnapshot: JSON.stringify(getDiagramData(get())) });
       },
       setZoom: (zoom) => set({ zoom }),
       setIsLocked: (locked) => set({ isLocked: locked }),
@@ -254,6 +277,12 @@ export const useDiagramStore = create<DiagramStore>()(
           }, edges),
         });
       },
+
+      onReconnect: (oldEdge: Edge, newConnection: Connection) => {
+        set({
+          edges: reconnectEdge(oldEdge, newConnection, get().edges),
+        });
+      },
       
       addNode: (shapeType: ShapeType, position: { x: number; y: number }, dataOverrides?: Partial<ShapeNodeData> & { width?: number; height?: number }) => {
         if (get().isLocked) return;
@@ -277,12 +306,13 @@ export const useDiagramStore = create<DiagramStore>()(
             color: shapeType === 'sticky' ? '#fef08a' : shapeType === 'frame' ? 'transparent' : '#ffffff',
             borderColor: shapeType === 'sticky' ? '#eab308' : shapeType === 'frame' ? '#94a3b8' : '#94a3b8',
             borderWidth: shapeType === 'frame' ? 4 : 2,
-            fontSize: shapeType === 'frame' ? 18 : 14,
+            fontSize: shapeType === 'frame' ? 18 : shapeType === 'sticker' ? undefined : 14,
             align: shapeType === 'frame' ? 'left' : 'center',
             bold: shapeType === 'frame' ? true : false,
             status: shapeType === 'card' ? 'todo' : undefined,
             assignee: shapeType === 'card' ? 'Unassigned' : shapeType === 'sticky' ? 'Anonymous' : undefined,
             dueDate: shapeType === 'card' ? '' : undefined,
+            portalId: get().activeCanvasId || undefined,
             ...cleanDataOverrides,
           } as ShapeNodeData,
         };
@@ -318,11 +348,15 @@ export const useDiagramStore = create<DiagramStore>()(
         });
       },
 
-      updateEdge: (edgeId: string, data: Partial<Edge>) => {
+      updateEdge: (edgeId: string, patch: Partial<Edge>) => {
         set({
           edges: get().edges.map((edge) => {
             if (edge.id === edgeId) {
-              return { ...edge, ...data };
+              return {
+                ...edge,
+                ...patch,
+                data: patch.data !== undefined ? { ...((edge.data as Record<string, any>) || {}), ...patch.data } : edge.data,
+              };
             }
             return edge;
           }),
@@ -385,6 +419,7 @@ export const useDiagramStore = create<DiagramStore>()(
             borderWidth: 2,
             fontSize: 14,
             align: 'center',
+            portalId: (parentNode.data as ShapeNodeData)?.portalId || get().activeCanvasId || undefined,
           } as ShapeNodeData,
         };
 
@@ -431,6 +466,7 @@ export const useDiagramStore = create<DiagramStore>()(
             borderWidth: 2,
             fontSize: 14,
             align: 'center',
+            portalId: (node.data as ShapeNodeData)?.portalId || get().activeCanvasId || undefined,
           } as ShapeNodeData,
         };
 
@@ -448,6 +484,47 @@ export const useDiagramStore = create<DiagramStore>()(
 
         const deselectedNodes = nodes.map(n => ({ ...n, selected: false }));
         set({ nodes: [...deselectedNodes, newNode], edges: newEdges });
+      },
+
+      deleteNodes: (nodeIds: string[]) => {
+        if (get().isLocked || !nodeIds || nodeIds.length === 0) return;
+        const targetIds = new Set(nodeIds);
+        const { activeCanvasId, edges, nodes } = get();
+
+        // Cascade-delete child nodes if their parent group is deleted (fixed-point loop handles arbitrary depth and array ordering)
+        let added = true;
+        while (added) {
+          added = false;
+          nodes.forEach((n) => {
+            if (n.parentId && targetIds.has(n.parentId) && !targetIds.has(n.id)) {
+              targetIds.add(n.id);
+              added = true;
+            }
+          });
+        }
+
+        // 1. Reset active portal canvas if the active portal node is being deleted
+        if (activeCanvasId && targetIds.has(activeCanvasId)) {
+          get().setActiveCanvasId(null);
+        }
+
+        // 2. Identify and prune all incoming and outgoing edges
+        const edgesToRemove = edges.filter(
+          (e) => targetIds.has(e.source) || targetIds.has(e.target)
+        );
+
+        // 3. Remove nodes via onNodesChange (supports undo/redo & external listeners)
+        get().onNodesChange(Array.from(targetIds).map((id) => ({ type: 'remove', id })));
+
+        // 4. Remove connected edges via onEdgesChange
+        if (edgesToRemove.length > 0) {
+          get().onEdgesChange(edgesToRemove.map((e) => ({ type: 'remove', id: e.id })));
+        }
+      },
+
+      deleteNode: (nodeId: string) => {
+        if (!nodeId) return;
+        get().deleteNodes([nodeId]);
       },
 
       clearCanvas: () => {
@@ -513,10 +590,23 @@ export const useDiagramStore = create<DiagramStore>()(
         
         if (selectedNodes.length > 0 || selectedEdges.length > 0) {
           // Deep-clone data so later edits to originals don't mutate the clipboard
-          const clonedNodes = selectedNodes.map(n => ({
-            ...n,
-            data: deepCloneNodeData(n.data),
-          }));
+          const clonedNodes = selectedNodes.map(n => {
+            let parentId = n.parentId;
+            let position = { ...n.position };
+            let extent = n.extent;
+            if (parentId && !selectedNodeIds.has(parentId)) {
+              position = getAbsolutePosition(n, nodes);
+              parentId = undefined;
+              extent = undefined;
+            }
+            return {
+              ...n,
+              parentId,
+              position,
+              extent,
+              data: deepCloneNodeData(n.data),
+            };
+          });
           const clonedEdges = selectedEdges.map(e => ({ ...e }));
           set({ clipboard: { nodes: clonedNodes, edges: clonedEdges } });
         }
@@ -525,6 +615,7 @@ export const useDiagramStore = create<DiagramStore>()(
       pasteSelection: () => {
         const { clipboard, nodes, edges } = get();
         if (!clipboard) return;
+        const activeCanvasId = get().activeCanvasId;
 
         const newNodes: Node[] = [];
         const newEdges: Edge[] = [];
@@ -540,6 +631,10 @@ export const useDiagramStore = create<DiagramStore>()(
           const newId = idMap.get(node.id)!;
           // Only preserve parentId if the parent is also in the clipboard (avoids dangling refs)
           const newParentId = node.parentId && idMap.has(node.parentId) ? idMap.get(node.parentId) : undefined;
+          const clonedData = deepCloneNodeData(node.data);
+          // Always re-home to the active canvas — an inherited portalId would be
+          // invisible when pasting outside the portal the node came from.
+          clonedData.portalId = activeCanvasId || undefined;
           newNodes.push({
             ...node,
             id: newId,
@@ -547,8 +642,9 @@ export const useDiagramStore = create<DiagramStore>()(
             extent: newParentId ? 'parent' : undefined,
             selected: true,
             // Clone data so the pasted node doesn't share references with the clipboard
-            data: deepCloneNodeData(node.data),
-            position: { x: node.position.x + 30, y: node.position.y + 30 }
+            data: clonedData,
+            // When pasting both parent and child, keep child's relative position unchanged to prevent double-offset drift
+            position: newParentId ? { ...node.position } : { x: node.position.x + 30, y: node.position.y + 30 }
           });
         });
 
@@ -594,6 +690,7 @@ export const useDiagramStore = create<DiagramStore>()(
             borderColor: '#94a3b8',
             borderWidth: 2,
             align: 'center',
+            portalId: get().activeCanvasId || undefined,
           } as ShapeNodeData,
         };
         const updatedNodes = get().nodes.map(n => ({ ...n, selected: false }));
@@ -604,6 +701,7 @@ export const useDiagramStore = create<DiagramStore>()(
         const { nodes, edges } = get();
         const selectedNodes = nodes.filter(n => n.selected);
         if (selectedNodes.length === 0) return;
+        const activeCanvasId = get().activeCanvasId;
 
         const idMap = new Map<string, string>();
         const offset = 30;
@@ -618,14 +716,22 @@ export const useDiagramStore = create<DiagramStore>()(
           const newId = idMap.get(n.id)!;
           // Only preserve parentId if the parent is also selected (avoids dangling refs)
           const newParentId = n.parentId && idMap.has(n.parentId) ? idMap.get(n.parentId) : undefined;
+          
+          let position = { ...n.position };
+          let extent = newParentId ? ('parent' as const) : undefined;
+          if (n.parentId && !newParentId) {
+            position = getAbsolutePosition(n, nodes);
+          }
+          
           return {
             ...n,
             id: newId,
             parentId: newParentId,
-            extent: newParentId ? ('parent' as const) : undefined,
-            position: { x: n.position.x + offset, y: n.position.y + offset },
+            extent,
+            // When duplicating both parent and child, keep child's relative position unchanged to prevent double-offset drift
+            position: newParentId ? position : { x: position.x + offset, y: position.y + offset },
             selected: true,
-            data: deepCloneNodeData(n.data),
+            data: { ...deepCloneNodeData(n.data), portalId: activeCanvasId || undefined },
           };
         });
 
@@ -657,34 +763,50 @@ export const useDiagramStore = create<DiagramStore>()(
           h: n.measured?.height ?? n.height ?? 50
         });
 
+        const absPositions = new Map<string, {x: number, y: number}>();
+        selectedNodes.forEach(sn => {
+          absPositions.set(sn.id, getAbsolutePosition(sn, nodes));
+        });
+
         const updatedNodes = nodes.map(n => {
           if (!n.selected) return n;
           
-          let newPos = { ...n.position };
+          let absPos = absPositions.get(n.id)!;
+          let newAbsPos = { ...absPos };
           
           if (alignment === 'left') {
-            const minX = Math.min(...selectedNodes.map(sn => sn.position.x));
-            newPos.x = minX;
+            const minX = Math.min(...selectedNodes.map(sn => absPositions.get(sn.id)!.x));
+            newAbsPos.x = minX;
           } else if (alignment === 'right') {
-            const maxRight = Math.max(...selectedNodes.map(sn => sn.position.x + getDims(sn).w));
-            newPos.x = maxRight - getDims(n).w;
+            const maxRight = Math.max(...selectedNodes.map(sn => absPositions.get(sn.id)!.x + getDims(sn).w));
+            newAbsPos.x = maxRight - getDims(n).w;
           } else if (alignment === 'center') {
-            const centers = selectedNodes.map(sn => sn.position.x + getDims(sn).w / 2);
+            const centers = selectedNodes.map(sn => absPositions.get(sn.id)!.x + getDims(sn).w / 2);
             const avgCenter = centers.reduce((sum, c) => sum + c, 0) / selectedNodes.length;
-            newPos.x = avgCenter - getDims(n).w / 2;
+            newAbsPos.x = avgCenter - getDims(n).w / 2;
           } else if (alignment === 'top') {
-            const minY = Math.min(...selectedNodes.map(sn => sn.position.y));
-            newPos.y = minY;
+            const minY = Math.min(...selectedNodes.map(sn => absPositions.get(sn.id)!.y));
+            newAbsPos.y = minY;
           } else if (alignment === 'bottom') {
-            const maxBottom = Math.max(...selectedNodes.map(sn => sn.position.y + getDims(sn).h));
-            newPos.y = maxBottom - getDims(n).h;
+            const maxBottom = Math.max(...selectedNodes.map(sn => absPositions.get(sn.id)!.y + getDims(sn).h));
+            newAbsPos.y = maxBottom - getDims(n).h;
           } else if (alignment === 'middle') {
-            const middles = selectedNodes.map(sn => sn.position.y + getDims(sn).h / 2);
+            const middles = selectedNodes.map(sn => absPositions.get(sn.id)!.y + getDims(sn).h / 2);
             const avgMiddle = middles.reduce((sum, m) => sum + m, 0) / selectedNodes.length;
-            newPos.y = avgMiddle - getDims(n).h / 2;
+            newAbsPos.y = avgMiddle - getDims(n).h / 2;
           }
           
-          return { ...n, position: newPos };
+          let newRelPos = { ...newAbsPos };
+          if (n.parentId) {
+            const parent = nodes.find(p => p.id === n.parentId);
+            if (parent) {
+               const parentAbs = getAbsolutePosition(parent, nodes);
+               newRelPos.x -= parentAbs.x;
+               newRelPos.y -= parentAbs.y;
+            }
+          }
+          
+          return { ...n, position: newRelPos };
         });
 
         set({ nodes: updatedNodes });
@@ -721,6 +843,7 @@ export const useDiagramStore = create<DiagramStore>()(
         groupHeight = Math.min(Math.max(groupHeight, 50), 5000);
         if (!Number.isFinite(groupWidth) || !Number.isFinite(groupHeight)) return;
 
+        const portalId = (selectedNodes[0].data as ShapeNodeData)?.portalId || get().activeCanvasId || undefined;
         const groupNode: Node = {
           id: groupId,
           type: 'shape',
@@ -735,6 +858,7 @@ export const useDiagramStore = create<DiagramStore>()(
             color: 'transparent',
             borderColor: '#94a3b8',
             borderWidth: 2,
+            portalId,
           } as ShapeNodeData,
         };
 
@@ -811,12 +935,14 @@ export const useDiagramStore = create<DiagramStore>()(
           parentMap.set(edge.target, edge.source);
         });
 
-        // 2. Find root nodes (nodes with no incoming connections). We do NOT exclude
-        //    grouped nodes (parentId) here — layout should still arrange them.
-        let rootNodes = nodes.filter((node) => !parentMap.has(node.id));
-        // Fallback: if all nodes have incoming edges (cyclic graph), pick the first node as root
+        // 2. Find root nodes (nodes with no incoming connections and not inside a parent group).
+        // Grouped children are skipped by layoutNode, so excluding them from rootNodes prevents
+        // their heights from inflating rootY and creating large empty gaps between root trees.
+        let rootNodes = nodes.filter((node) => !node.parentId && !parentMap.has(node.id));
+        // Fallback: if all top-level nodes have incoming edges (cyclic graph), pick the first as root
         if (rootNodes.length === 0 && nodes.length > 0) {
-          rootNodes = [nodes[0]];
+          const topNodes = nodes.filter(n => !n.parentId);
+          rootNodes = topNodes.length > 0 ? [topNodes[0]] : [nodes[0]];
         }
 
         // 3. Subtree height calculation
@@ -1035,9 +1161,11 @@ export const useDiagramStore = create<DiagramStore>()(
         const rawNodes = Array.isArray(state.nodes) ? state.nodes : [];
         const rawEdges = Array.isArray(state.edges) ? state.edges : [];
         // Basic sanity: ensure nodes have finite positions if present, else reset to empty
-        const nodes = rawNodes.filter(n => n && typeof n.id === 'string' && n.position && Number.isFinite(n.position.x) && Number.isFinite(n.position.y));
+        const nodes = rawNodes
+          .filter(n => n && typeof n.id === 'string' && n.position && Number.isFinite(n.position.x) && Number.isFinite(n.position.y))
+          .map(n => n.data && typeof n.data === 'object' && !Array.isArray(n.data) ? n : { ...n, data: {} });
         const edges = rawEdges.filter(e => e && typeof e.id === 'string' && typeof e.source === 'string' && typeof e.target === 'string');
-        set({
+        const data = getDiagramData({
           nodes,
           edges,
           theme: state.theme || 'light',
@@ -1046,6 +1174,9 @@ export const useDiagramStore = create<DiagramStore>()(
           boardNotes: typeof state.boardNotes === 'string' ? state.boardNotes : '',
           gridType: state.gridType || 'dots',
           canvasColor: typeof state.canvasColor === 'string' || state.canvasColor === null ? state.canvasColor : null,
+        });
+        set({
+          ...data,
           // Reset transient state to avoid getting trapped in presentation mode,
           // locked canvas, or a now-deleted portal after loading a project.
           activeCanvasId: null,
@@ -1056,7 +1187,7 @@ export const useDiagramStore = create<DiagramStore>()(
           zoom: 1,
           fileHandle: null,
           fileName: null,
-          lastSavedSnapshot: JSON.stringify({ nodes, edges }),
+          lastSavedSnapshot: JSON.stringify(data),
         });
         useDiagramStore.temporal.getState().clear();
       },
@@ -1076,13 +1207,21 @@ export const useDiagramStore = create<DiagramStore>()(
           h: n.measured?.height ?? n.height ?? 50,
         });
 
+        const absPositions = new Map<string, {x: number, y: number}>();
+        selectedNodes.forEach(sn => {
+          absPositions.set(sn.id, getAbsolutePosition(sn, nodes));
+        });
+
         if (direction === 'horizontal') {
-          const sorted = [...selectedNodes].sort((a, b) => a.position.x - b.position.x);
+          const sorted = [...selectedNodes].sort((a, b) => absPositions.get(a.id)!.x - absPositions.get(b.id)!.x);
           const first = sorted[0];
           const last = sorted[sorted.length - 1];
-          // Gap based on right-edge of first → left-edge of last, minus total node widths
+          const firstAbs = absPositions.get(first.id)!.x;
+          const lastAbs = absPositions.get(last.id)!.x;
+          
+          // Gap based on right-edge of first   left-edge of last, minus total node widths
           const totalWidths = sorted.reduce((sum, n) => sum + getDims(n).w, 0);
-          const rawAvailable = (last.position.x + getDims(last).w) - first.position.x - totalWidths;
+          const rawAvailable = (lastAbs + getDims(last).w) - firstAbs - totalWidths;
           const availableSpace = Math.max(0, rawAvailable);
           const gapSize = sorted.length > 1 ? availableSpace / (sorted.length - 1) : 0;
 
@@ -1090,41 +1229,65 @@ export const useDiagramStore = create<DiagramStore>()(
             if (!n.selected) return n;
             const index = sorted.findIndex(sn => sn.id === n.id);
             // Compute x: cumulative left-edge based on prior node widths + gaps
-            let xPos = first.position.x;
+            let xPos = firstAbs;
             for (let i = 0; i < index; i++) {
               xPos += getDims(sorted[i]).w + gapSize;
             }
+            
+            let newRelPos = { ...n.position, x: xPos };
+            if (n.parentId) {
+              const parent = nodes.find(p => p.id === n.parentId);
+              if (parent) {
+                 const parentAbs = getAbsolutePosition(parent, nodes);
+                 newRelPos.x -= parentAbs.x;
+                 // y is unaffected, but we need to compute its relative from its own absolute if we touched it, but we only touched x
+                 newRelPos.y = absPositions.get(n.id)!.y - parentAbs.y;
+              }
+            } else {
+               newRelPos.y = absPositions.get(n.id)!.y;
+            }
+            
             return {
               ...n,
-              position: {
-                ...n.position,
-                x: xPos
-              }
+              position: newRelPos
             };
           });
           set({ nodes: updatedNodes });
         } else {
-          const sorted = [...selectedNodes].sort((a, b) => a.position.y - b.position.y);
+          const sorted = [...selectedNodes].sort((a, b) => absPositions.get(a.id)!.y - absPositions.get(b.id)!.y);
           const first = sorted[0];
           const last = sorted[sorted.length - 1];
+          const firstAbs = absPositions.get(first.id)!.y;
+          const lastAbs = absPositions.get(last.id)!.y;
+          
           const totalHeights = sorted.reduce((sum, n) => sum + getDims(n).h, 0);
-          const rawAvailable = (last.position.y + getDims(last).h) - first.position.y - totalHeights;
+          const rawAvailable = (lastAbs + getDims(last).h) - firstAbs - totalHeights;
           const availableSpace = Math.max(0, rawAvailable);
           const gapSize = sorted.length > 1 ? availableSpace / (sorted.length - 1) : 0;
 
           const updatedNodes = nodes.map(n => {
             if (!n.selected) return n;
             const index = sorted.findIndex(sn => sn.id === n.id);
-            let yPos = first.position.y;
+            let yPos = firstAbs;
             for (let i = 0; i < index; i++) {
               yPos += getDims(sorted[i]).h + gapSize;
             }
+            
+            let newRelPos = { ...n.position, y: yPos };
+            if (n.parentId) {
+              const parent = nodes.find(p => p.id === n.parentId);
+              if (parent) {
+                 const parentAbs = getAbsolutePosition(parent, nodes);
+                 newRelPos.y -= parentAbs.y;
+                 newRelPos.x = absPositions.get(n.id)!.x - parentAbs.x;
+              }
+            } else {
+               newRelPos.x = absPositions.get(n.id)!.x;
+            }
+            
             return {
               ...n,
-              position: {
-                ...n.position,
-                y: yPos
-              }
+              position: newRelPos
             };
           });
           set({ nodes: updatedNodes });
@@ -1152,8 +1315,9 @@ export const useDiagramStore = create<DiagramStore>()(
           roots.push(selectedNodes[0]);
         }
 
-        const startX = roots[0].position.x;
-        const startY = roots[0].position.y;
+        const rootAbs = getAbsolutePosition(roots[0], nodes);
+        const startX = rootAbs.x;
+        const startY = rootAbs.y;
         const updatedPositions = new Map<string, { x: number; y: number }>();
 
         const offsetSubtree = (nodeId: string, dx: number, visited: Set<string>) => {
@@ -1213,9 +1377,19 @@ export const useDiagramStore = create<DiagramStore>()(
 
         const updatedNodes = nodes.map(n => {
           if (updatedPositions.has(n.id)) {
+            const absPos = updatedPositions.get(n.id)!;
+            let relPos = { ...absPos };
+            if (n.parentId) {
+              const parent = nodes.find(p => p.id === n.parentId);
+              if (parent) {
+                const parentAbs = getAbsolutePosition(parent, nodes);
+                relPos.x -= parentAbs.x;
+                relPos.y -= parentAbs.y;
+              }
+            }
             return {
               ...n,
-              position: updatedPositions.get(n.id)!
+              position: relPos
             };
           }
           return n;
@@ -1262,20 +1436,32 @@ export const useDiagramStore = create<DiagramStore>()(
   ),
   {
     partialize: (state) => ({ nodes: state.nodes, edges: state.edges }),
+    equality: (before, after) => before.nodes === after.nodes && before.edges === after.edges,
     limit: 100,
+    wrapTemporal: (initialize) => (...args) => {
+      const history = initialize(...args);
+      return {
+        ...history,
+        clear: () => {
+          cancelPendingHistory();
+          history.clear();
+        },
+        undo: (steps) => {
+          flushPendingHistory();
+          history.undo(steps);
+        },
+        redo: (steps) => {
+          flushPendingHistory();
+          history.redo(steps);
+        },
+      };
+    },
     handleSet: (handleSet) => {
-      let timeout: ReturnType<typeof setTimeout> | null = null;
-      let lastState: any = null;
       return (state) => {
-        lastState = state;
-        if (timeout) {
-          clearTimeout(timeout);
-        }
-        timeout = setTimeout(() => {
-          handleSet(lastState);
-          timeout = null;
-          lastState = null;
-        }, 250); // 250ms is perfect for combining quick continuous changes
+        // An undo step should restore the state from before the entire burst.
+        pendingHistory ??= () => handleSet(state);
+        clearTimeout(historyTimer);
+        historyTimer = setTimeout(flushPendingHistory, 250);
       };
     }
   }

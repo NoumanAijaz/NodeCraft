@@ -4,7 +4,6 @@ import { useReactFlow } from '@xyflow/react';
 import type { Node } from '@xyflow/react';
 import { useDiagramStore } from '../../store/useDiagramStore';
 import { useToast } from '../../context/ToastContext';
-import { api } from '../../utils/api';
 import { exportToSVG, downloadSVG } from '../../utils/svgExport';
 import { exportNodesToPng, downloadDataUrl } from '../../utils/pngExport';
 import { Search, CornerDownLeft } from 'lucide-react';
@@ -160,24 +159,6 @@ export function CommandPalette() {
     showToast('Exported JSON backup', 'success');
   }, [showToast]);
 
-  const cloudSaveAction = useCallback(async () => {
-    const store = useDiagramStore.getState();
-    if (!store.projectId) return showToast('No cloud project open', 'warning');
-    try {
-      const st = useDiagramStore.getState();
-      const snapshot = JSON.stringify({ nodes: st.nodes, edges: st.edges });
-      await api.put(`/projects/${store.projectId}`, {
-        data: { nodes: st.nodes, edges: st.edges, theme: st.theme, snapToGrid: st.snapToGrid,
-          gridSize: st.gridSize, boardNotes: st.boardNotes, gridType: st.gridType, canvasColor: st.canvasColor },
-        name: st.projectName || 'Untitled Diagram',
-      });
-      store.markSaved(snapshot);
-      showToast('Saved to cloud', 'success');
-    } catch (err: any) {
-      showToast(err?.message || 'Save failed', 'error');
-    }
-  }, [showToast]);
-
   const loadTemplateAction = useCallback((name: 'mindmap' | 'flowchart' | 'database') => {
     const { nodes } = useDiagramStore.getState();
     if (nodes.length > 0 && !window.confirm(`Replace current canvas with the ${name} template?`)) return;
@@ -208,7 +189,7 @@ export function CommandPalette() {
       { id: 'act-help', group: 'Actions', title: 'Keyboard Shortcuts', icon: '?', keywords: 'help keys documentation', run: () => useDiagramStore.getState().setShowHelpModal(true) },
       { id: 'act-undo', group: 'Actions', title: 'Undo', icon: '↩', keywords: 'revert step back', run: () => useDiagramStore.temporal.getState().undo() },
       { id: 'act-redo', group: 'Actions', title: 'Redo', icon: '↪', keywords: 'repeat step forward', run: () => useDiagramStore.temporal.getState().redo() },
-      { id: 'act-save', group: 'Actions', title: 'Save to Cloud', icon: '☁', keywords: 'sync persist upload save', run: () => { void cloudSaveAction(); } },
+      { id: 'act-save', group: 'Actions', title: 'Save to Cloud', icon: '☁', keywords: 'sync persist upload save', run: () => window.dispatchEvent(new Event('nodecraft-save-cloud')) },
       { id: 'act-mermaid', group: 'Actions', title: 'Import from Mermaid…', icon: '🧩', keywords: 'mermaid flowchart paste convert import diagram', run: () => window.dispatchEvent(new Event('nodecraft-open-mermaid')) },
       { id: 'act-versions', group: 'Actions', title: 'Version History…', icon: '🕓', keywords: 'snapshot restore backup revisions history versions', run: () => window.dispatchEvent(new Event('nodecraft-open-versions')) },
       { id: 'act-exp-png', group: 'Actions', title: 'Export PNG', icon: '🖼', keywords: 'image raster download', run: () => { void exportPngAction(); } },
@@ -240,7 +221,7 @@ export function CommandPalette() {
     return [...actions, ...templates, ...nodeCommands];
     // nodeCount keeps the Nodes group fresh without re-rendering during drags
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [addShape, jumpToNode, exportSvgAction, exportPngAction, exportJsonAction, cloudSaveAction, loadTemplateAction, fitView, navigate, showToast, nodeCount]);
+  }, [addShape, jumpToNode, exportSvgAction, exportPngAction, exportJsonAction, loadTemplateAction, fitView, navigate, showToast, nodeCount]);
 
   const filtered = useMemo(() => {
     if (!query.trim()) return commands.slice(0, 50);

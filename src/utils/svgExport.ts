@@ -1,6 +1,8 @@
+import { getBezierPath, getSmoothStepPath, getStraightPath } from '@xyflow/react';
 import type { Node, Edge } from '@xyflow/react';
 import type { ShapeNodeData } from '../types/diagram';
 import { colorGradients } from '../constants/colors';
+import { getSmartEdgeRouting, computeAvoidancePath } from './edgeRouting';
 
 interface SVGExportOptions {
   padding?: number;
@@ -72,62 +74,6 @@ function sanitizeStrokeDasharray(value: unknown): string | null {
 
 function sanitizeBackgroundColor(value: unknown, fallback: string): string {
   return sanitizeColor(value, fallback);
-}
-
-// ---------- edge path calculation ----------
-
-/**
- * Computes intersection point of a ray from the center of a rectangle
- * toward `angle`, with the rectangle boundary.
- */
-function rectEdgePoint(
-  cx: number, cy: number, hw: number, hh: number, angle: number
-): { x: number; y: number } {
-  const cos = Math.cos(angle);
-  const sin = Math.sin(angle);
-
-  // Avoid division by zero
-  if (Math.abs(cos) < 1e-9) {
-    return { x: cx, y: cy + (sin > 0 ? hh : -hh) };
-  }
-  if (Math.abs(sin) < 1e-9) {
-    return { x: cx + (cos > 0 ? hw : -hw), y: cy };
-  }
-
-  const tx = hw / Math.abs(cos);
-  const ty = hh / Math.abs(sin);
-  const t = Math.min(tx, ty);
-  return { x: cx + t * cos, y: cy + t * sin };
-}
-
-function getEdgePath(
-  sx: number, sy: number, sw: number, sh: number,
-  tx: number, ty: number, tw: number, th: number,
-  edgeType: string
-): string {
-  const sCx = sx + sw / 2;
-  const sCy = sy + sh / 2;
-  const tCx = tx + tw / 2;
-  const tCy = ty + th / 2;
-
-  const angle = Math.atan2(tCy - sCy, tCx - sCx);
-
-  const src = rectEdgePoint(sCx, sCy, sw / 2, sh / 2, angle);
-  const tgt = rectEdgePoint(tCx, tCy, tw / 2, th / 2, angle + Math.PI);
-
-  if (edgeType === 'straight') {
-    return `M ${src.x} ${src.y} L ${tgt.x} ${tgt.y}`;
-  }
-
-  if (edgeType === 'step') {
-    const midX = (src.x + tgt.x) / 2;
-    return `M ${src.x} ${src.y} L ${midX} ${src.y} L ${midX} ${tgt.y} L ${tgt.x} ${tgt.y}`;
-  }
-
-  // Default: bezier curve (React Flow style — horizontal control points)
-  const dx = tgt.x - src.x;
-  const controlOffset = Math.max(Math.abs(dx) * 0.4, 30);
-  return `M ${src.x} ${src.y} C ${src.x + controlOffset} ${src.y}, ${tgt.x - controlOffset} ${tgt.y}, ${tgt.x} ${tgt.y}`;
 }
 
 function getAbsolutePosition(node: Node, allNodes: Node[]): { x: number; y: number } {
@@ -297,12 +243,12 @@ function renderShape(
 
     case 'sticker': {
       // Emoji sticker — render large emoji centered in an invisible box.
-      const emoji = data.stickerEmoji || '⭐';
+      const emoji = data.stickerEmoji || (data.label && data.label !== 'New Node' ? data.label : '⭐');
       const cx = x + w / 2;
       const cy = y + h / 2;
       const rotVal = sanitizeRotation(data.rotation);
       const rot = rotVal ? ` transform="rotate(${escapeXml(rotVal)} ${cx} ${cy})"` : '';
-      const fontSize = sanitizeNumeric(Math.min(w, h) * 0.7, 40, 8, 200);
+      const fontSize = sanitizeNumeric(Math.min(w, h) * 0.78, 40, 4, 2000);
       return `<text x="${cx}" y="${cy}" text-anchor="middle" dominant-baseline="central"${rot} font-size="${fontSize}" font-family="system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', sans-serif">${escapeXml(emoji)}</text>`;
     }
 
@@ -600,10 +546,6 @@ export function exportToSVG(
     if (!sourceNode || !targetNode) continue;
     if (!isRenderable(sourceNode, nodes) || !isRenderable(targetNode, nodes)) continue;
 
-    const sw = sourceNode.measured?.width || sourceNode.width || 150;
-    const sh = sourceNode.measured?.height || sourceNode.height || 50;
-    const tw = targetNode.measured?.width || targetNode.width || 150;
-    const th = targetNode.measured?.height || targetNode.height || 50;
     const edgeType = typeof edge.type === 'string' ? edge.type : 'default';
     const style = edge.style as { strokeWidth?: unknown; stroke?: unknown; strokeDasharray?: unknown } | undefined;
     const strokeWidth = sanitizeNumeric(style?.strokeWidth, 2, 0, 20);
@@ -614,18 +556,96 @@ export function exportToSVG(
     const markerId = `arrow-${safeStroke.replace(/[^a-zA-Z0-9]/g, '')}`;
 
     // IMPORTANT: compute path in *offset* coordinate space so it matches node rendering
-    const sourceAbs = getAbsolutePosition(sourceNode, nodes);
-    const targetAbs = getAbsolutePosition(targetNode, nodes);
+    const sRatio = typeof (edge.data as any)?.sourceRatio === 'number' ? (edge.data as any).sourceRatio : 0.5;
+    const tRatio = typeof (edge.data as any)?.targetRatio === 'number' ? (edge.data as any).targetRatio : 0.5;
 
-    const pathD = getEdgePath(
-      sourceAbs.x - offsetX,
-      sourceAbs.y - offsetY,
-      sw, sh,
-      targetAbs.x - offsetX,
-      targetAbs.y - offsetY,
-      tw, th,
-      edgeType === 'step' ? 'step' : edgeType === 'straight' ? 'straight' : 'default'
-    );
+    const routing = getSmartEdgeRouting(sourceNode, targetNode, edge.sourceHandle, edge.targetHandle, nodes, sRatio, tRatio, edgeType);
+    const sx = routing.sourceX - offsetX;
+    const sy = routing.sourceY - offsetY;
+    const tx = routing.targetX - offsetX;
+    const ty = routing.targetY - offsetY;
+
+    let pathD = '';
+    let lx = (sx + tx) / 2;
+    let ly = (sy + ty) / 2;
+
+    if (routing.avoidancePath) {
+      const cornerRadius = edgeType === 'step' ? 0 : edgeType === 'smoothstep' ? 12 : 24;
+      const sBox = {
+        x: ((sourceNode as any).internals?.positionAbsolute?.x ?? getAbsolutePosition(sourceNode, nodes).x) - offsetX,
+        y: ((sourceNode as any).internals?.positionAbsolute?.y ?? getAbsolutePosition(sourceNode, nodes).y) - offsetY,
+        width: sourceNode.measured?.width ?? sourceNode.width ?? 150,
+        height: sourceNode.measured?.height ?? sourceNode.height ?? 80,
+      };
+      const tBox = {
+        x: ((targetNode as any).internals?.positionAbsolute?.x ?? getAbsolutePosition(targetNode, nodes).x) - offsetX,
+        y: ((targetNode as any).internals?.positionAbsolute?.y ?? getAbsolutePosition(targetNode, nodes).y) - offsetY,
+        width: targetNode.measured?.width ?? targetNode.width ?? 150,
+        height: targetNode.measured?.height ?? targetNode.height ?? 80,
+      };
+      const shiftedAvoidance = computeAvoidancePath(
+        sBox,
+        { x: sx, y: sy },
+        routing.sourceHandleId,
+        tBox,
+        { x: tx, y: ty },
+        routing.targetHandleId,
+        32,
+        cornerRadius
+      );
+      if (shiftedAvoidance) {
+        pathD = shiftedAvoidance.path;
+        lx = shiftedAvoidance.labelX;
+        ly = shiftedAvoidance.labelY;
+      }
+    }
+
+    if (!pathD) {
+      if (edgeType === 'straight') {
+        const [p, x, y] = getStraightPath({ sourceX: sx, sourceY: sy, targetX: tx, targetY: ty });
+        pathD = p;
+        lx = x;
+        ly = y;
+      } else if (edgeType === 'step') {
+        const [p, x, y] = getSmoothStepPath({
+          sourceX: sx,
+          sourceY: sy,
+          sourcePosition: routing.sourcePos,
+          targetX: tx,
+          targetY: ty,
+          targetPosition: routing.targetPos,
+          borderRadius: 0,
+        });
+        pathD = p;
+        lx = x;
+        ly = y;
+      } else if (edgeType === 'smoothstep') {
+        const [p, x, y] = getSmoothStepPath({
+          sourceX: sx,
+          sourceY: sy,
+          sourcePosition: routing.sourcePos,
+          targetX: tx,
+          targetY: ty,
+          targetPosition: routing.targetPos,
+          borderRadius: 12,
+        });
+        pathD = p;
+        lx = x;
+        ly = y;
+      } else {
+        const [p, x, y] = getBezierPath({
+          sourceX: sx,
+          sourceY: sy,
+          sourcePosition: routing.sourcePos,
+          targetX: tx,
+          targetY: ty,
+          targetPosition: routing.targetPos,
+        });
+        pathD = p;
+        lx = x;
+        ly = y;
+      }
+    }
 
     const hasMarkerStart = !!edge.markerStart;
     const hasMarkerEnd = !!edge.markerEnd;
@@ -646,16 +666,6 @@ export function exportToSVG(
 
     // Edge Label rendering
     if (edge.label && typeof edge.label === 'string') {
-      const sCx = sourceAbs.x - offsetX + sw / 2;
-      const sCy = sourceAbs.y - offsetY + sh / 2;
-      const tCx = targetAbs.x - offsetX + tw / 2;
-      const tCy = targetAbs.y - offsetY + th / 2;
-      const angle = Math.atan2(tCy - sCy, tCx - sCx);
-      const src = rectEdgePoint(sCx, sCy, sw / 2, sh / 2, angle);
-      const tgt = rectEdgePoint(tCx, tCy, tw / 2, th / 2, angle + Math.PI);
-
-      const lx = (src.x + tgt.x) / 2;
-      const ly = (src.y + tgt.y) / 2;
       const safeLabel = escapeXml(String(edge.label).slice(0, 200));
       const labelLength = safeLabel.length;
       const rectWidth = Math.max(60, Math.min(300, labelLength * 6 + 10));

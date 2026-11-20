@@ -3,7 +3,7 @@ import { Handle, Position } from '@xyflow/react';
 import { NodeResizer } from '@xyflow/react';
 import type { NodeProps } from '@xyflow/react';
 import type { ShapeNodeData, ShapeNode as ShapeNodeType } from '../../../types/diagram';
-import { useDiagramStore } from '../../../store/useDiagramStore';
+import { useDiagramStore, getAbsolutePosition } from '../../../store/useDiagramStore';
 import { colorGradients } from '../../../constants/colors';
 import { useToast } from '../../../context/ToastContext';
 import { Image as ImageIcon, Lock, User, Calendar, FileText } from 'lucide-react';
@@ -34,38 +34,34 @@ function isSafeImageUrl(url: string | undefined): boolean {
   return false;
 }
 
-const QuickAddOverlay = memo(function QuickAddOverlay({ nodeId, selected, locked }: { nodeId: string; selected: boolean; locked: boolean }) {
-  const addChildNode = useDiagramStore((state) => state.addChildNode);
-  const addSiblingNode = useDiagramStore((state) => state.addSiblingNode);
-  if (!selected || locked) return null;
-
+const NodeHandles = memo(function NodeHandles({ locked }: { locked?: boolean }) {
+  if (locked) return null;
   return (
     <>
-      {/* Right Quick Add Button */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          addChildNode(nodeId);
-        }}
-        className="absolute -right-6 top-1/2 -translate-y-1/2 w-5 h-5 bg-blue-500 hover:bg-blue-600 text-white rounded-full flex items-center justify-center shadow-md z-30 transition-all hover:scale-125 no-print"
-        title="Add child node"
-        aria-label="Add child node"
-      >
-        <span className="text-[14px] font-extrabold leading-none" aria-hidden="true">+</span>
-      </button>
-
-      {/* Bottom Quick Add Button */}
-      <button
-        onClick={(e) => {
-          e.stopPropagation();
-          addSiblingNode(nodeId);
-        }}
-        className="absolute -bottom-6 left-1/2 -translate-x-1/2 w-5 h-5 bg-green-500 hover:bg-green-600 text-white rounded-full flex items-center justify-center shadow-md z-30 transition-all hover:scale-125 no-print"
-        title="Add sibling node"
-        aria-label="Add sibling node"
-      >
-        <span className="text-[14px] font-extrabold leading-none" aria-hidden="true">+</span>
-      </button>
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="top"
+        className="react-flow__handle"
+      />
+      <Handle
+        type="source"
+        position={Position.Right}
+        id="right"
+        className="react-flow__handle"
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom"
+        className="react-flow__handle"
+      />
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="left"
+        className="react-flow__handle"
+      />
     </>
   );
 });
@@ -404,10 +400,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
   if (shapeType === 'drawing') {
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <NodeHandles locked={locked} />
 
         <NodeResizer 
           color="#3b82f6" 
@@ -450,16 +443,13 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
   if (shapeType === 'sticker') {
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <NodeHandles locked={locked} />
 
         <NodeResizer 
           color="#3b82f6" 
           isVisible={selected && !locked} 
-          minWidth={50} 
-          minHeight={50} 
+          minWidth={30} 
+          minHeight={30} 
           lineClassName="stroke-blue-500"
         />
 
@@ -470,17 +460,34 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
         )}
 
         <div 
-          className="w-full h-full flex items-center justify-center select-none animate-in zoom-in-50 duration-200"
+          className="w-full h-full flex items-center justify-center select-none animate-in zoom-in-50 duration-200 leading-none pointer-events-none"
           style={{
-            fontSize: `${fontSize || 54}px`,
-            filter: 'drop-shadow(0 4px 6px rgba(0, 0, 0, 0.15)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1))',
+            filter: 'drop-shadow(0 4px 8px rgba(0, 0, 0, 0.18)) drop-shadow(0 1px 3px rgba(0, 0, 0, 0.1))',
             transform: typeof rotation === 'number' ? `rotate(${rotation}deg)` : 'rotate(-5deg)',
           }}
           role="img"
           aria-label={`Sticker: ${stickerEmoji || 'star'}`}
         >
-          <span aria-hidden="true">{stickerEmoji || '⭐'}</span>
+          <svg
+            viewBox="0 0 100 100"
+            className="w-full h-full"
+            style={{ overflow: 'visible', pointerEvents: 'none' }}
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <text
+              x="50"
+              y="54"
+              fontSize="78"
+              textAnchor="middle"
+              dominantBaseline="central"
+              fontFamily="system-ui, 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', sans-serif"
+              style={{ userSelect: 'none' }}
+            >
+              {stickerEmoji || (shapeData.label && shapeData.label !== 'New Node' ? shapeData.label : '⭐')}
+            </text>
+          </svg>
         </div>
+        <Overlays id={id} votes={votes} reactions={reactions} tags={tags} notes={notes} />
       </>
     );
   }
@@ -489,10 +496,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
   if (isDiamond) {
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
+        <NodeHandles locked={locked} />
         
         <NodeResizer 
           color="#3b82f6" 
@@ -507,8 +511,6 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
             <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
-
-        <QuickAddOverlay nodeId={id} selected={selected} locked={!!locked} />
 
         <div
           style={{
@@ -588,10 +590,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
   if (shapeType === 'cylinder') {
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
+        <NodeHandles locked={locked} />
         
         <NodeResizer 
           color="#3b82f6" 
@@ -606,8 +605,6 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
             <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
-
-        <QuickAddOverlay nodeId={id} selected={selected} locked={!!locked} />
 
         <div
           style={{
@@ -746,10 +743,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
 
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
-        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full z-10" />
+        <NodeHandles locked={locked} />
         
         <NodeResizer 
           color="#3b82f6" 
@@ -764,8 +758,6 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
             <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
-
-        <QuickAddOverlay nodeId={id} selected={selected} locked={!!locked} />
 
         <div
           style={{
@@ -855,10 +847,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
   if (isCircle) {
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-3 h-3 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-3 h-3 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="target" position={Position.Left} id="left" className="w-3 h-3 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Right} id="right" className="w-3 h-3 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <NodeHandles locked={locked} />
         
         <NodeResizer 
           color="#3b82f6" 
@@ -873,8 +862,6 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
             <Lock size={10} strokeWidth={3} aria-hidden="true" />
           </div>
         )}
-
-        <QuickAddOverlay nodeId={id} selected={selected} locked={!!locked} />
 
         <div
           style={{
@@ -1007,10 +994,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
 
     return (
       <>
-        <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
+        <NodeHandles locked={locked} />
 
         <NodeResizer 
           color="#10b981" 
@@ -1107,14 +1091,7 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
 
   return (
     <>
-      {!isTextOnly && (
-        <>
-          <Handle type="target" position={Position.Top} id="top" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-          <Handle type="source" position={Position.Right} id="right" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-          <Handle type="source" position={Position.Bottom} id="bottom" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-          <Handle type="target" position={Position.Left} id="left" className="w-2.5 h-2.5 bg-blue-500 border-2 border-white dark:border-slate-700 rounded-full" />
-        </>
-      )}
+      {!isTextOnly && <NodeHandles locked={locked} />}
       
       <NodeResizer 
         color="#3b82f6" 
@@ -1129,8 +1106,6 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
           <Lock size={10} strokeWidth={3} aria-hidden="true" />
         </div>
       )}
-
-      <QuickAddOverlay nodeId={id} selected={selected} locked={!!locked} />
 
       <div
         style={resolvedShapeStyle}
@@ -1191,12 +1166,14 @@ function ShapeNodeInner({ id, data, selected, width: nodeWidth, height: nodeHeig
               const newOrbits = (shapeData.ideaOrbits || []).filter((_, i) => i !== index);
               updateNodeData(id, { ideaOrbits: newOrbits });
 
-              const node = useDiagramStore.getState().nodes.find(n => n.id === id);
+              const allNodes = useDiagramStore.getState().nodes;
+              const node = allNodes.find(n => n.id === id);
               if (!node) return;
 
+              const absPos = getAbsolutePosition(node, allNodes);
               useDiagramStore.getState().addNode('sticky', {
-                x: node.position.x + 150 + (Math.random() * 50),
-                y: node.position.y + (Math.random() * 100 - 50)
+                x: absPos.x + 150 + (Math.random() * 50),
+                y: absPos.y + (Math.random() * 100 - 50)
               }, { label: idea });
             };
             return (

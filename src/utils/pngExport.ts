@@ -37,11 +37,12 @@ export async function exportNodesToPng(
   const cssHeight = nodesBounds.height + 100;
 
   // Auto-fit: shrink ratio until output respects edge & area limits.
-  let ratio = maxPixelRatio;
   const fitEdge = Math.min(MAX_EDGE_PX / cssWidth, MAX_EDGE_PX / cssHeight);
   const fitArea = Math.sqrt(MAX_AREA_PX / Math.max(1, cssWidth * cssHeight));
-  ratio = Math.min(ratio, fitEdge, fitArea);
-  ratio = Math.max(minPixelRatio, Math.min(maxPixelRatio, ratio));
+  const ratio = Math.min(Math.max(minPixelRatio, maxPixelRatio), fitEdge, fitArea);
+  // Keep at least one output pixel on the short axis of a very narrow diagram.
+  const canvasWidth = Math.max(cssWidth, (1 + Number.EPSILON) / ratio);
+  const canvasHeight = Math.max(cssHeight, (1 + Number.EPSILON) / ratio);
 
   const viewport = getViewportForBounds(
     nodesBounds,
@@ -75,6 +76,8 @@ export async function exportNodesToPng(
       backgroundColor,
       width: cssWidth,
       height: cssHeight,
+      canvasWidth,
+      canvasHeight,
       pixelRatio: ratio,
       style: {
         width: `${cssWidth}px`,
@@ -86,8 +89,8 @@ export async function exportNodesToPng(
       ok: true,
       dataUrl,
       pixelRatio: ratio,
-      width: Math.round(cssWidth * ratio),
-      height: Math.round(cssHeight * ratio),
+      width: Math.floor(canvasWidth * ratio),
+      height: Math.floor(canvasHeight * ratio),
     };
   } catch (error) {
     return { ok: false, reason: 'failed', error };

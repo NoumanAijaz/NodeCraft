@@ -90,11 +90,13 @@ function createRateLimiter({ windowMs, max, message, keyFn }) {
   };
 }
 
-const globalApiLimiter = createRateLimiter({
+const apiLimit = {
   windowMs: 60 * 1000,
   max: 120,
   message: 'Too many requests — please slow down.',
-});
+};
+const globalApiLimiter = createRateLimiter(apiLimit);
+const sessionLimiter = createRateLimiter(apiLimit);
 const authLimiter = createRateLimiter({
   windowMs: 15 * 60 * 1000,
   max: 20,
@@ -120,7 +122,9 @@ app.use((err, req, res, next) => {
 });
 
 // API Routes (with rate limiting)
-app.use('/api/auth', authLimiter, authRoutes);
+app.use(['/api/auth/login', '/api/auth/register'], authLimiter);
+app.use('/api/auth/me', sessionLimiter);
+app.use('/api/auth', authRoutes);
 app.use('/api/projects', globalApiLimiter, projectRoutes);
 
 // Healthcheck
@@ -161,6 +165,25 @@ app.use((err, req, res, next) => {
   });
 });
 
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   console.log(`🚀 NodeCraft Server running on http://localhost:${PORT}`);
 });
+
+function handleShutdown(signal) {
+  console.log(`\nReceived ${signal}. Shutting down gracefully...`);
+  server.close(() => {
+    console.log('HTTP server closed.');
+    process.exit(0);
+  });
+  // Force shutdown after timeout if pending connections hang
+  setTimeout(() => {
+    console.error('Forcing shutdown after timeout.');
+    process.exit(1);
+  }, 5000).unref();
+}
+
+process.on('SIGINT', () => handleShutdown('SIGINT'));
+process.on('SIGTERM', () => handleShutdown('SIGTERM'));
+
+export default app;
+

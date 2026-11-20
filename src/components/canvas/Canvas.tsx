@@ -8,14 +8,17 @@ import {
   SelectionMode,
   BackgroundVariant,
   Panel,
+  ConnectionMode,
 } from '@xyflow/react';
 import '@xyflow/react/dist/style.css';
 
 import { useDiagramStore, getAbsolutePosition } from '../../store/useDiagramStore';
 import { ShapeNode } from './nodes/ShapeNode';
+import { SmartEdge } from './edges/SmartEdge';
 import type { ShapeType, ShapeNodeData } from '../../types/diagram';
 import { ContextToolbar } from './ContextToolbar';
 import { MultiSelectToolbar } from './MultiSelectToolbar';
+import { CanvasContextMenu } from './CanvasContextMenu';
 
 
 import { TimerWidget } from './TimerWidget';
@@ -70,6 +73,18 @@ const nodeTypes = {
   shape: ShapeNode,
 };
 
+const edgeTypes = {
+  default: SmartEdge,
+  bezier: SmartEdge,
+  straight: SmartEdge,
+  step: SmartEdge,
+  smoothstep: SmartEdge,
+};
+
+function isNodeOnCanvas(node: { data: Record<string, unknown> }, canvasId: string | null) {
+  return canvasId ? node.data.portalId === canvasId : !node.data.portalId;
+}
+
 function CanvasContent() {
   // Use individual selectors (or useShallow) instead of destructuring the whole
   // store — destructuring the whole store causes Canvas to re-render on every
@@ -79,6 +94,55 @@ function CanvasContent() {
   const onNodesChange = useDiagramStore((s) => s.onNodesChange);
   const onEdgesChange = useDiagramStore((s) => s.onEdgesChange);
   const onConnect = useDiagramStore((s) => s.onConnect);
+  const onReconnect = useDiagramStore((s) => s.onReconnect);
+  const [isConnecting, setIsConnecting] = useState(false);
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    type: 'node' | 'edge' | 'pane';
+    targetId?: string;
+    isLocked?: boolean;
+  } | null>(null);
+
+  const handleNodeContextMenu = useCallback((event: React.MouseEvent, node: any) => {
+    event.preventDefault();
+    event.stopPropagation();
+    const store = useDiagramStore.getState();
+    if (!node.selected) {
+      store.selectNode(node.id);
+    }
+    const isNodeLocked = !!(node.data as ShapeNodeData)?.locked;
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      type: 'node',
+      targetId: node.id,
+      isLocked: isNodeLocked,
+    });
+  }, []);
+
+  const handleEdgeContextMenu = useCallback((event: React.MouseEvent, edge: any) => {
+    event.preventDefault();
+    event.stopPropagation();
+    useDiagramStore.setState({
+      edges: useDiagramStore.getState().edges.map((e) => ({ ...e, selected: e.id === edge.id })),
+    });
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      type: 'edge',
+      targetId: edge.id,
+    });
+  }, []);
+
+  const handlePaneContextMenu = useCallback((event: MouseEvent | React.MouseEvent) => {
+    event.preventDefault();
+    setContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      type: 'pane',
+    });
+  }, []);
   const addNode = useDiagramStore((s) => s.addNode);
   const addChildNode = useDiagramStore((s) => s.addChildNode);
   const addSiblingNode = useDiagramStore((s) => s.addSiblingNode);
@@ -103,8 +167,7 @@ function CanvasContent() {
   const selectNode = useDiagramStore((s) => s.selectNode);
   
   const visibleNodes = useMemo(() => {
-    if (!activeCanvasId) return nodes.filter(n => !(n.data as ShapeNodeData).portalId);
-    return nodes.filter(n => (n.data as ShapeNodeData).portalId === activeCanvasId);
+    return nodes.filter(n => isNodeOnCanvas(n, activeCanvasId));
   }, [nodes, activeCanvasId]);
 
   const visibleEdges = useMemo(() => {
@@ -327,8 +390,10 @@ function CanvasContent() {
             const rf = getReactFlowInstance();
             if (rf) {
               const flowP = rf.screenToFlowPosition({ x: e.clientX, y: e.clientY });
-              const currentNodes = useDiagramStore.getState().nodes;
+              const { nodes: currentNodes, activeCanvasId, isLocked } = useDiagramStore.getState();
+              if (isLocked) return;
               const nodeToDelete = currentNodes.find(node => {
+                if (!isNodeOnCanvas(node, activeCanvasId)) return false;
                 const absPos = getAbsolutePosition(node, currentNodes);
                 const w = node.width || (node.data as any)?.width || 100;
                 const h = node.height || (node.data as any)?.height || 100;
@@ -336,18 +401,7 @@ function CanvasContent() {
               });
               
               if (nodeToDelete) {
-                // Exiting the portal canvas first prevents getting trapped
-                // when the eraser removes the active portal node.
-                const storeState = useDiagramStore.getState();
-                if (storeState.activeCanvasId === nodeToDelete.id) {
-                  storeState.setActiveCanvasId(null);
-                }
-                const currentEdges = useDiagramStore.getState().edges;
-                const edgesToRemove = currentEdges.filter(e => e.source === nodeToDelete.id || e.target === nodeToDelete.id);
-                useDiagramStore.getState().onNodesChange([{ type: 'remove', id: nodeToDelete.id }]);
-                if (edgesToRemove.length > 0) {
-                  useDiagramStore.getState().onEdgesChange(edgesToRemove.map(e => ({ type: 'remove', id: e.id })));
-                }
+                useDiagramStore.getState().deleteNode(nodeToDelete.id);
               }
               
               // Re-fetch nodes after potential deletion for accurate edge hit-testing
@@ -360,7 +414,8 @@ function CanvasContent() {
               const edgeToDelete = currentEdges.find(edge => {
                 const sourceNode = freshNodes.find(n => n.id === edge.source);
                 const targetNode = freshNodes.find(n => n.id === edge.target);
-                if (!sourceNode || !targetNode) return false;
+                if (!sourceNode || !targetNode ||
+                  !isNodeOnCanvas(sourceNode, activeCanvasId) || !isNodeOnCanvas(targetNode, activeCanvasId)) return false;
                 
                 const sourceAbs = getAbsolutePosition(sourceNode, freshNodes);
                 const targetAbs = getAbsolutePosition(targetNode, freshNodes);
@@ -583,35 +638,26 @@ function CanvasContent() {
   const [showMiniMap, setShowMiniMap] = useState(true);
 
   const presentationNodes = useMemo(() => {
+    const allNodes = useDiagramStore.getState().nodes;
     return [...visibleNodes]
       .filter((n) => n.type === 'shape')
       .sort((a, b) => {
-        if (Math.abs(a.position.x - b.position.x) < 50) {
-          return a.position.y - b.position.y;
+        const posA = getAbsolutePosition(a, allNodes);
+        const posB = getAbsolutePosition(b, allNodes);
+        if (Math.abs(posA.x - posB.x) < 50) {
+          return posA.y - posB.y;
         }
-        return a.position.x - b.position.x;
+        return posA.x - posB.x;
       });
   }, [visibleNodes]);
 
   const focusSlide = useCallback((index: number) => {
     const node = presentationNodes[index];
     if (node && reactFlowInstance) {
-      // Walk parentId chain so the camera centers correctly on grouped nodes
+      // Use getAbsolutePosition so the camera centers correctly on grouped nodes
       // (whose `position` is relative to their parent).
       const allNodes = useDiagramStore.getState().nodes;
-      let absX = node.position.x;
-      let absY = node.position.y;
-      let current: typeof node = node;
-      const visited = new Set<string>([node.id]);
-      while (current.parentId) {
-        if (visited.has(current.parentId)) break;
-        visited.add(current.parentId);
-        const parent = allNodes.find(n => n.id === current.parentId);
-        if (!parent) break;
-        absX += parent.position.x;
-        absY += parent.position.y;
-        current = parent;
-      }
+      const { x: absX, y: absY } = getAbsolutePosition(node, allNodes);
       const w = node.measured?.width || node.width || 150;
       const h = node.measured?.height || node.height || 100;
       reactFlowInstance.setCenter(absX + w / 2, absY + h / 2, { zoom: 1.4, duration: 800 });
@@ -639,24 +685,12 @@ function CanvasContent() {
     if (useDiagramStore.getState().presentationMode && useDiagramStore.getState().nodes.length > 0) {
       setCurrentSlideIndex(0);
       const t = setTimeout(() => {
+        if (currentSlideIndexRef.current !== 0) return;
         const rf = getReactFlowInstance();
         const storeNodes = useDiagramStore.getState().nodes;
-        const shapeNodes = [...storeNodes].filter((n: any) => n.type === 'shape').sort((a, b) => {
-          if (Math.abs(a.position.x - b.position.x) < 50) return a.position.y - b.position.y;
-          return a.position.x - b.position.x;
-        });
-        const first = shapeNodes[0] as any;
+        const first = presentationNodesRef.current[0];
         if (!first || !rf) return;
-        let absX = first.position.x, absY = first.position.y;
-        let cur: typeof first = first;
-        const visited = new Set<string>([first.id]);
-        while (cur.parentId) {
-          if (visited.has(cur.parentId)) break;
-          visited.add(cur.parentId);
-          const parent = storeNodes.find((n: any) => n.id === cur.parentId);
-          if (!parent) break;
-          absX += parent.position.x; absY += parent.position.y; cur = parent;
-        }
+        const { x: absX, y: absY } = getAbsolutePosition(first, storeNodes);
         rf.setCenter(absX + (first.measured?.width || first.width || 150) / 2, absY + (first.measured?.height || first.height || 100) / 2, { zoom: 1.4, duration: 800 });
       }, 300);
       return () => clearTimeout(t);
@@ -671,25 +705,16 @@ function CanvasContent() {
     const selectedNodeIds = new Set(selectedNodes.map(n => n.id));
     const selectedEdgeIds = new Set(selectedEdges.map(e => e.id));
     
-      if (selectedNodeIds.size > 0 || selectedEdgeIds.size > 0) {
-        // If the active portal node is among those deleted, exit its canvas first
-        // so the user isn't trapped in a now-empty portal view.
-        const store = useDiagramStore.getState();
-        if (store.activeCanvasId && selectedNodeIds.has(store.activeCanvasId)) {
-          store.setActiveCanvasId(null);
-        }
-        const edgesToRemove = edges.filter(
-        e => selectedEdgeIds.has(e.id) || selectedNodeIds.has(e.source) || selectedNodeIds.has(e.target)
-      );
-
+    if (selectedNodeIds.size > 0 || selectedEdgeIds.size > 0) {
       if (selectedNodeIds.size > 0) {
-        useDiagramStore.getState().onNodesChange(
-          selectedNodes.map(n => ({ type: 'remove', id: n.id }))
-        );
+        useDiagramStore.getState().deleteNodes(Array.from(selectedNodeIds));
       }
-      if (edgesToRemove.length > 0) {
+      // Any remaining selected edges that were not connected to deleted nodes
+      const remainingEdges = useDiagramStore.getState().edges;
+      const leftoverEdges = remainingEdges.filter(e => selectedEdgeIds.has(e.id));
+      if (leftoverEdges.length > 0) {
         useDiagramStore.getState().onEdgesChange(
-          edgesToRemove.map(e => ({ type: 'remove', id: e.id }))
+          leftoverEdges.map(e => ({ type: 'remove', id: e.id }))
         );
       }
       
@@ -760,7 +785,7 @@ function CanvasContent() {
         const pNodes = presentationNodesRef.current;
         const curIdx = currentSlideIndexRef.current;
         const fSlide = focusSlideRef.current;
-        if (e.key === 'ArrowRight' || e.key === 'Space') {
+        if (e.key === 'ArrowRight' || e.code === 'Space' || e.key === ' ') {
           e.preventDefault();
           if (curIdx < pNodes.length - 1) {
             const nextIndex = curIdx + 1;
@@ -1035,8 +1060,9 @@ function CanvasContent() {
   return (
     <>
       <div
-        className={`flex-1 h-full w-full relative transition-all duration-300 ${canvasColor ? '' : 'bg-gray-50 dark:bg-slate-900'} ${interactionMode === 'laser' || interactionMode === 'pen' ? 'cursor-crosshair' : interactionMode === 'eraser' ? 'cursor-cell' : ''}`}
+        className={`flex-1 h-full w-full relative transition-all duration-300 ${canvasColor ? '' : 'bg-gray-50 dark:bg-slate-900'} ${interactionMode === 'laser' || interactionMode === 'pen' ? 'cursor-crosshair' : interactionMode === 'eraser' ? 'cursor-cell' : ''} ${isConnecting ? 'is-connecting' : ''}`}
         style={{ backgroundColor: canvasColor || undefined }}
+        onContextMenu={(e) => e.preventDefault()}
         ref={reactFlowWrapper}
       >
         <ReactFlow
@@ -1048,9 +1074,24 @@ function CanvasContent() {
           onConnect={onConnect}
           onDragOver={onDragOver}
           onDrop={onDrop}
+          onNodeContextMenu={handleNodeContextMenu}
+          onEdgeContextMenu={handleEdgeContextMenu}
+          onPaneContextMenu={handlePaneContextMenu}
+          onPaneClick={() => setContextMenu(null)}
+          onMoveStart={() => setContextMenu(null)}
           onNodeDrag={handleNodeDrag}
           onNodeDragStop={handleNodeDragStop}
           nodeTypes={nodeTypes}
+          edgeTypes={edgeTypes}
+          connectionMode={ConnectionMode.Loose}
+          connectionRadius={35}
+          onConnectStart={() => setIsConnecting(true)}
+          onConnectEnd={() => setIsConnecting(false)}
+          onReconnect={onReconnect}
+          onReconnectStart={() => setIsConnecting(true)}
+          onReconnectEnd={() => setIsConnecting(false)}
+          edgesReconnectable={!isLocked && effectiveInteractionMode !== 'laser' && effectiveInteractionMode !== 'pen' && effectiveInteractionMode !== 'eraser' && !presentationMode}
+          connectionLineStyle={{ stroke: '#3b82f6', strokeWidth: 2 }}
           fitView
           fitViewOptions={{ padding: 2 }}
           minZoom={0.1}
@@ -1253,6 +1294,17 @@ function CanvasContent() {
           </div>
         ))}
 
+        {contextMenu && (
+          <CanvasContextMenu
+            x={contextMenu.x}
+            y={contextMenu.y}
+            type={contextMenu.type}
+            targetId={contextMenu.targetId}
+            isLocked={contextMenu.isLocked}
+            onClose={() => setContextMenu(null)}
+          />
+        )}
+
         {/* Notepad Collapsible Drawer */}
         {showNotepad && (() => {
           const selectedNode = getNodes().find(n => n.selected);
@@ -1388,9 +1440,10 @@ function CanvasContent() {
                               if (rf && frame.position) {
                                 const w = frame.measured?.width || frame.width || 200;
                                 const h = frame.measured?.height || frame.height || 200;
+                                const pos = getAbsolutePosition(frame, getNodes());
                                 rf.setCenter(
-                                  frame.position.x + w / 2,
-                                  frame.position.y + h / 2,
+                                  pos.x + w / 2,
+                                  pos.y + h / 2,
                                   { zoom: 0.85, duration: 800 }
                                 );
                                 showToast(`Navigating to outline: ${(frame.data as any).label}`, 'info');

@@ -11,7 +11,7 @@ const sanitizePath = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9_
 
 // Atomic file write: write to temp file then rename (crash-safe, avoids corruption)
 function atomicWriteFileSync(filePath, content) {
-  const tmpPath = `${filePath}.tmp`;
+  const tmpPath = `${filePath}.${uuidv4()}.tmp`;
   fs.writeFileSync(tmpPath, content, 'utf8');
   fs.renameSync(tmpPath, filePath);
 }
@@ -20,6 +20,7 @@ function atomicWriteFileSync(filePath, content) {
 const getProjectPath = (username, projectId) => {
   const cleanUser = sanitizePath(username);
   const cleanId = sanitizePath(projectId);
+  if (!cleanUser || !cleanId) throw new Error('Invalid project path');
   // Defense-in-depth: ensure resolved path stays inside projectsDir
   const full = path.join(projectsDir, cleanUser, `${cleanId}.ncraft`);
   const resolved = path.resolve(full);
@@ -104,31 +105,44 @@ router.post('/', authenticateToken, (req, res) => {
   // If a template was requested
   if (template === 'mindmap') {
     initialDiagramData.nodes = [
-      { id: '1', type: 'shape', position: { x: 400, y: 300 }, data: { label: 'Main Topic', shapeType: 'circle', color: 'bg-blue-500' } },
-      { id: '2', type: 'shape', position: { x: 200, y: 150 }, data: { label: 'Subtopic 1', shapeType: 'sticky' } },
-      { id: '3', type: 'shape', position: { x: 600, y: 150 }, data: { label: 'Subtopic 2', shapeType: 'sticky' } },
-      { id: '4', type: 'shape', position: { x: 200, y: 450 }, data: { label: 'Subtopic 3', shapeType: 'sticky' } },
-      { id: '5', type: 'shape', position: { x: 600, y: 450 }, data: { label: 'Subtopic 4', shapeType: 'sticky' } }
+      { id: '1', type: 'shape', position: { x: 200, y: 200 }, width: 160, height: 80, data: { label: 'Central Idea', shapeType: 'rectangle', color: '#bfdbfe', borderColor: '#3b82f6', borderWidth: 3, fontSize: 16, bold: true, align: 'center' } },
+      { id: '2', type: 'shape', position: { x: 450, y: 80 }, width: 150, height: 60, data: { label: 'Research & Planning', shapeType: 'rectangle', color: '#fef08a', borderColor: '#eab308', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '3', type: 'shape', position: { x: 450, y: 210 }, width: 150, height: 60, data: { label: 'Design System', shapeType: 'rectangle', color: '#bbf7d0', borderColor: '#22c55e', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '4', type: 'shape', position: { x: 450, y: 340 }, width: 150, height: 60, data: { label: 'Core Execution', shapeType: 'rectangle', color: '#c7d2fe', borderColor: '#6366f1', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '5', type: 'shape', position: { x: 680, y: 50 }, width: 120, height: 50, data: { label: 'User Interviews', shapeType: 'sticky', color: '#ffffff', borderColor: '#cbd5e1', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '6', type: 'shape', position: { x: 680, y: 180 }, width: 120, height: 50, data: { label: 'Color Palette', shapeType: 'sticky', color: '#ffffff', borderColor: '#cbd5e1', borderWidth: 2, fontSize: 14, align: 'center' } }
     ];
     initialDiagramData.edges = [
-      { id: 'e1-2', source: '1', target: '2', animated: true },
-      { id: 'e1-3', source: '1', target: '3', animated: true },
-      { id: 'e1-4', source: '1', target: '4', animated: true },
-      { id: 'e1-5', source: '1', target: '5', animated: true }
+      { id: 'e1-2', source: '1', target: '2', type: 'default', style: { stroke: '#3b82f6', strokeWidth: 2 } },
+      { id: 'e1-3', source: '1', target: '3', type: 'default', style: { stroke: '#3b82f6', strokeWidth: 2 } },
+      { id: 'e1-4', source: '1', target: '4', type: 'default', style: { stroke: '#3b82f6', strokeWidth: 2 } },
+      { id: 'e2-5', source: '2', target: '5', type: 'default', style: { stroke: '#eab308', strokeWidth: 2 } },
+      { id: 'e3-6', source: '3', target: '6', type: 'default', style: { stroke: '#22c55e', strokeWidth: 2 } }
     ];
   } else if (template === 'flowchart') {
     initialDiagramData.nodes = [
-      { id: '1', type: 'shape', position: { x: 400, y: 100 }, data: { label: 'Start', shapeType: 'circle', color: 'bg-emerald-500' } },
-      { id: '2', type: 'shape', position: { x: 400, y: 220 }, data: { label: 'Process Data', shapeType: 'rectangle' } },
-      { id: '3', type: 'shape', position: { x: 400, y: 360 }, data: { label: 'Is Valid?', shapeType: 'diamond', color: 'bg-amber-500' } },
-      { id: '4', type: 'shape', position: { x: 250, y: 500 }, data: { label: 'Log Error', shapeType: 'rectangle', color: 'bg-rose-500' } },
-      { id: '5', type: 'shape', position: { x: 550, y: 500 }, data: { label: 'Save Record', shapeType: 'cylinder', color: 'bg-indigo-500' } }
+      { id: '1', type: 'shape', position: { x: 250, y: 50 }, width: 100, height: 100, data: { label: 'Start Process', shapeType: 'circle', color: '#bbf7d0', borderColor: '#22c55e', borderWidth: 2, bold: true, fontSize: 14, align: 'center' } },
+      { id: '2', type: 'shape', position: { x: 220, y: 200 }, width: 160, height: 70, data: { label: 'Enter Credentials', shapeType: 'rectangle', color: '#ffffff', borderColor: '#94a3b8', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '3', type: 'shape', position: { x: 240, y: 320 }, width: 120, height: 120, data: { label: 'Is Valid?', shapeType: 'diamond', color: '#fef08a', borderColor: '#eab308', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '4', type: 'shape', position: { x: 100, y: 500 }, width: 160, height: 75, data: { label: 'Access Granted\nRedirect to Home', shapeType: 'rectangle', color: '#bfdbfe', borderColor: '#3b82f6', borderWidth: 2, fontSize: 14, align: 'center' } },
+      { id: '5', type: 'shape', position: { x: 380, y: 500 }, width: 160, height: 75, data: { label: 'Show Error Message\nRetry login', shapeType: 'rectangle', color: '#fecaca', borderColor: '#ef4444', borderWidth: 2, fontSize: 14, align: 'center' } }
     ];
     initialDiagramData.edges = [
-      { id: 'e1-2', source: '1', target: '2' },
-      { id: 'e2-3', source: '2', target: '3' },
-      { id: 'e3-4', source: '3', target: '4', label: 'No' },
-      { id: 'e3-5', source: '3', target: '5', label: 'Yes' }
+      { id: 'e1-2', source: '1', target: '2', type: 'default' },
+      { id: 'e2-3', source: '2', target: '3', type: 'default' },
+      { id: 'e3-4', source: '3', target: '4', type: 'default', label: 'Yes', style: { stroke: '#22c55e' } },
+      { id: 'e3-5', source: '3', target: '5', type: 'default', label: 'No', style: { stroke: '#ef4444' } }
+    ];
+  } else if (template === 'database') {
+    initialDiagramData.nodes = [
+      { id: '1', type: 'shape', position: { x: 100, y: 150 }, width: 150, height: 150, data: { label: 'users\n---\n+ id: uuid\n* email: string\n* name: string', shapeType: 'cylinder', color: '#ffffff', borderColor: '#3b82f6', borderWidth: 2, fontSize: 13, align: 'center' } },
+      { id: '2', type: 'shape', position: { x: 380, y: 150 }, width: 150, height: 150, data: { label: 'posts\n---\n+ id: uuid\n# user_id: uuid\n* title: string\n* body: text', shapeType: 'cylinder', color: '#ffffff', borderColor: '#10b981', borderWidth: 2, fontSize: 13, align: 'center' } },
+      { id: '3', type: 'shape', position: { x: 660, y: 150 }, width: 150, height: 150, data: { label: 'comments\n---\n+ id: uuid\n# post_id: uuid\n# user_id: uuid\n* content: string', shapeType: 'cylinder', color: '#ffffff', borderColor: '#8b5cf6', borderWidth: 2, fontSize: 13, align: 'center' } }
+    ];
+    initialDiagramData.edges = [
+      { id: 'e1-2', source: '1', target: '2', type: 'default', label: '1 : N', style: { stroke: '#3b82f6' } },
+      { id: 'e2-3', source: '2', target: '3', type: 'default', label: '1 : N', style: { stroke: '#10b981' } },
+      { id: 'e1-3', source: '1', target: '3', type: 'default', label: '1 : N', style: { stroke: '#8b5cf6', strokeWidth: 1.5 }, animated: true }
     ];
   }
 
@@ -288,6 +302,7 @@ const MAX_VERSIONS_PER_PROJECT = 20;
 function getVersionsDir(username, projectId) {
   const cleanUser = sanitizePath(username);
   const cleanId = sanitizePath(projectId);
+  if (!cleanUser || !cleanId) throw new Error('Invalid versions path');
   const dir = path.resolve(path.join(projectsDir, cleanUser, `${cleanId}.versions`));
   if (dir !== path.resolve(projectsDir) && !dir.startsWith(path.resolve(projectsDir) + path.sep)) throw new Error('Invalid versions path');
   return dir;

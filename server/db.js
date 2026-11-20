@@ -1,6 +1,7 @@
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { DatabaseSync } from 'node:sqlite';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,218 +16,153 @@ if (!fs.existsSync(projectsDir)) {
   fs.mkdirSync(projectsDir, { recursive: true });
 }
 
+const dbPath = process.env.DATABASE_PATH || path.join(dataDir, 'nodecraft.db');
 const usersFile = path.join(dataDir, 'users.json');
 const projectsFile = path.join(dataDir, 'projects.json');
 
-// Memory cache loaded on startup
-let users = [];
-let projects = [];
-let nextUserId = 1;
+// Initialize SQLite database instance
+const sqlite = new DatabaseSync(dbPath);
 
-// Tolerate a UTF-8 BOM (e.g. from PowerShell Set-Content) instead of silently
-// discarding the whole database via the catch below.
-function readJsonFile(file) {
-  if (!fs.existsSync(file)) return null;
-  const text = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, '');
-  return JSON.parse(text);
-}
+// Enable WAL (Write-Ahead Logging) mode and foreign keys for high write concurrency & data integrity
+sqlite.exec('PRAGMA journal_mode = WAL;');
+sqlite.exec('PRAGMA synchronous = NORMAL;');
+sqlite.exec('PRAGMA foreign_keys = ON;');
 
-function backupCorruptFile(file) {
+// Create tables and indexes
+sqlite.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE NOT NULL,
+    password_hash TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS projects (
+    id TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    name TEXT NOT NULL,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_projects_user_id ON projects(user_id);
+  CREATE INDEX IF NOT EXISTS idx_projects_updated_at ON projects(updated_at DESC);
+`);
+
+// Auto-migrate from existing JSON files on first run if database is empty
+function autoMigrateFromJson() {
   try {
-    const backup = `${file}.corrupt-${Date.now()}.bak`;
-    fs.renameSync(file, backup);
-    console.error(`Backed up corrupted file to ${backup}`);
-  } catch (backupErr) {
-    console.error(`Could not back up corrupted ${file}:`, backupErr.message);
-  }
-}
+    const userCountRow = sqlite.prepare('SELECT count(*) AS count FROM users').get();
+    const userCount = Number(userCountRow?.count || 0);
 
-try {
-  const parsed = readJsonFile(usersFile);
-  if (Array.isArray(parsed)) {
-    users = parsed;
-    nextUserId = users.reduce((max, u) => Math.max(max, u.id || 0), 0) + 1;
-  }
-} catch {
-  console.error('WARNING: users.json is corrupted — starting with an empty user list.');
-  backupCorruptFile(usersFile);
-  users = [];
-}
-
-try {
-  const parsed = readJsonFile(projectsFile);
-  if (Array.isArray(parsed)) projects = parsed;
-} catch {
-  console.error('WARNING: projects.json is corrupted — starting with an empty project list.');
-  backupCorruptFile(projectsFile);
-  projects = [];
-}
-
-function saveUsers() {
-  const tmpFile = `${usersFile}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(users, null, 2), 'utf8');
-  fs.renameSync(tmpFile, usersFile);
-}
-
-function saveProjects() {
-  const tmpFile = `${projectsFile}.tmp`;
-  fs.writeFileSync(tmpFile, JSON.stringify(projects, null, 2), 'utf8');
-  fs.renameSync(tmpFile, projectsFile);
-}
-
-// Pure JS Database interface compatible with SQLite callback pattern
-const db = {
-  run(sql, params = [], callback) {
-    setTimeout(() => {
-      try {
-        if (sql.includes('INSERT INTO users')) {
-          const [username, password_hash] = params;
-          const exists = users.some(u => u.username === username);
-          if (exists) {
-            const err = new Error('UNIQUE constraint failed: users.username');
-            if (callback) return callback(err);
-            throw err;
-          }
-          // Recompute from current data so an external edit (e.g. admin CLI)
-          // can't cause a duplicate id with the cached counter.
-          nextUserId = users.reduce((max, u) => Math.max(max, u.id || 0), 0) + 1;
-          const newUser = {
-            id: nextUserId++,
-            username,
-            password_hash,
-            created_at: new Date().toISOString()
-          };
-          users.push(newUser);
-          saveUsers();
-          const context = { lastID: newUser.id, changes: 1 };
-          if (callback) callback.call(context, null);
-        } else if (sql.includes('INSERT INTO projects')) {
-          const [id, user_id, name, created_at, updated_at] = params;
-          const exists = projects.some(p => p.id === id);
-          if (exists) {
-            const err = new Error('UNIQUE constraint failed: projects.id');
-            if (callback) return callback(err);
-            throw err;
-          }
-          const newProject = { id, user_id, name, created_at, updated_at };
-          projects.push(newProject);
-          saveProjects();
-          const context = { lastID: id, changes: 1 };
-          if (callback) callback.call(context, null);
-        } else if (sql.includes('UPDATE projects SET name')) {
-          // Handles both `SET name = ?, updated_at = ?` and `SET name = ?` forms (second is redundant but kept for compat)
-          const [name, updated_at, id, user_id] = params;
-          let changes = 0;
-          projects = projects.map(p => {
-            if (p.id === id && p.user_id === user_id) {
-              changes++;
-              return { ...p, name, updated_at };
-            }
-            return p;
-          });
-          saveProjects();
-          const context = { changes };
-          if (callback) callback.call(context, null);
-        } else if (sql.includes('UPDATE projects SET updated_at')) {
-          // Restore path: timestamp-only update (must come after the SET-name
-          // branch; matched separately so it can't silently no-op).
-          const [updated_at, id, user_id] = params;
-          let changes = 0;
-          projects = projects.map(p => {
-            if (p.id === id && p.user_id === user_id) {
-              changes++;
-              return { ...p, updated_at };
-            }
-            return p;
-          });
-          saveProjects();
-          const context = { changes };
-          if (callback) callback.call(context, null);
-        } else if (sql.includes('UPDATE projects SET')) {
-          // Unknown UPDATE shape — fail loudly instead of reporting success.
-          const err = new Error(`Unsupported SQL: ${sql}`);
-          if (callback) return callback(err);
-          throw err;
-        } else if (sql.includes('DELETE FROM projects')) {
-          const [id, user_id] = params;
-          const initialLen = projects.length;
-          projects = projects.filter(p => !(p.id === id && p.user_id === user_id));
-          saveProjects();
-          const context = { changes: initialLen - projects.length };
-          if (callback) callback.call(context, null);
-        } else {
-          // Fail loudly on unknown statements — silent success hid real bugs.
-          const err = new Error(`Unsupported SQL: ${sql}`);
-          if (callback) return callback(err);
-          throw err;
+    if (userCount === 0 && fs.existsSync(usersFile)) {
+      const raw = fs.readFileSync(usersFile, 'utf8').replace(/^\uFEFF/, '');
+      const usersData = JSON.parse(raw);
+      if (Array.isArray(usersData) && usersData.length > 0) {
+        const insertUser = sqlite.prepare(
+          'INSERT OR IGNORE INTO users (id, username, password_hash, created_at) VALUES (?, ?, ?, ?)'
+        );
+        for (const u of usersData) {
+          insertUser.run(
+            u.id,
+            u.username,
+            u.password_hash,
+            u.created_at || new Date().toISOString()
+          );
         }
+        console.log(`[Database Migration] Migrated ${usersData.length} user(s) from users.json to SQLite.`);
+      }
+    }
+
+    const projCountRow = sqlite.prepare('SELECT count(*) AS count FROM projects').get();
+    const projCount = Number(projCountRow?.count || 0);
+
+    if (projCount === 0 && fs.existsSync(projectsFile)) {
+      const raw = fs.readFileSync(projectsFile, 'utf8').replace(/^\uFEFF/, '');
+      const projectsData = JSON.parse(raw);
+      if (Array.isArray(projectsData) && projectsData.length > 0) {
+        const insertProject = sqlite.prepare(
+          'INSERT OR IGNORE INTO projects (id, user_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)'
+        );
+        for (const p of projectsData) {
+          insertProject.run(
+            p.id,
+            p.user_id,
+            p.name,
+            p.created_at || new Date().toISOString(),
+            p.updated_at || new Date().toISOString()
+          );
+        }
+        console.log(`[Database Migration] Migrated ${projectsData.length} project(s) from projects.json to SQLite.`);
+      }
+    }
+  } catch (err) {
+    console.error('[Database Migration Warning] Error migrating JSON to SQLite:', err.message);
+  }
+}
+
+autoMigrateFromJson();
+
+/**
+ * SQLite database wrapper compatible with the SQLite callback pattern.
+ */
+const db = {
+  sqlite,
+
+  run(sql, params = [], callback) {
+    queueMicrotask(() => {
+      try {
+        const stmt = sqlite.prepare(sql);
+        const result = stmt.run(...params);
+        const context = {
+          lastID: Number(result.lastInsertRowid),
+          changes: Number(result.changes),
+        };
+        if (callback) callback.call(context, null);
       } catch (err) {
         if (callback) callback(err);
+        else throw err;
       }
-    }, 0);
+    });
   },
 
   get(sql, params = [], callback) {
-    setTimeout(() => {
+    queueMicrotask(() => {
       try {
-        if (sql.includes('SELECT * FROM users WHERE username = ?')) {
-          const [username] = params;
-          const user = users.find(u => u.username === username) || null;
-          if (callback) callback(null, user);
-        } else if (sql.includes('SELECT id, username, created_at FROM users WHERE id = ?')) {
-          const [id] = params;
-          const user = users.find(u => u.id === id);
-          if (user) {
-            if (callback) callback(null, { id: user.id, username: user.username, created_at: user.created_at });
-          } else {
-            if (callback) callback(null, null);
-          }
-        } else if (sql.includes('SELECT * FROM projects WHERE id = ? AND user_id = ?')) {
-          const [id, user_id] = params;
-          const proj = projects.find(p => p.id === id && p.user_id === user_id) || null;
-          if (callback) callback(null, proj);
-        } else {
-          // Fail loudly like run() — returning null here once hid real bugs.
-          const err = new Error(`Unsupported SQL: ${sql}`);
-          if (callback) return callback(err);
-          throw err;
-        }
+        const stmt = sqlite.prepare(sql);
+        const row = stmt.get(...params);
+        if (callback) callback(null, row || null);
       } catch (err) {
         if (callback) callback(err);
+        else throw err;
       }
-    }, 0);
+    });
   },
 
   all(sql, params = [], callback) {
-    setTimeout(() => {
+    queueMicrotask(() => {
       try {
-        if (sql.includes('SELECT id, name, created_at, updated_at FROM projects WHERE user_id = ?')) {
-          const [user_id] = params;
-          const userProjects = projects
-            .filter(p => p.user_id === user_id)
-            // Guard against invalid timestamps: an unparseable date yields NaN,
-            // and a comparator returning NaN makes the sort order undefined.
-            .sort((a, b) => {
-              const ta = new Date(a.updated_at).getTime();
-              const tb = new Date(b.updated_at).getTime();
-              return (Number.isNaN(tb) ? 0 : tb) - (Number.isNaN(ta) ? 0 : ta);
-            });
-          if (callback) callback(null, userProjects);
-        } else {
-          // Fail loudly like run() — returning [] here once hid real bugs.
-          const err = new Error(`Unsupported SQL: ${sql}`);
-          if (callback) return callback(err);
-          throw err;
-        }
+        const stmt = sqlite.prepare(sql);
+        const rows = stmt.all(...params);
+        if (callback) callback(null, rows || []);
       } catch (err) {
         if (callback) callback(err);
+        else throw err;
       }
-    }, 0);
+    });
   },
 
   serialize(fn) {
     if (fn) fn();
-  }
+  },
+
+  close() {
+    try {
+      sqlite.close();
+    } catch {
+      // Ignore if already closed
+    }
+  },
 };
 
 export default db;
