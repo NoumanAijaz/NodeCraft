@@ -1,11 +1,24 @@
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
+import { createHash } from 'node:crypto';
 import { v4 as uuidv4 } from 'uuid';
 import db, { projectsDir } from './db.js';
 import { authenticateToken } from './auth.js';
 
 const router = express.Router();
+
+function projectRevision(name, content) {
+  return createHash('sha256').update(name).update('\0').update(content).digest('hex');
+}
+
+function isStaleRevision(expected, name, filePath) {
+  if (expected === undefined) return false;
+  return typeof expected !== 'string' || !fs.existsSync(filePath) ||
+    expected !== projectRevision(name, fs.readFileSync(filePath, 'utf8'));
+}
+
+const revisionConflict = 'The cloud project changed. Save As to keep a local copy, then reload the project.';
 
 const sanitizePath = (str) => String(str || '').toLowerCase().replace(/[^a-z0-9_-]/g, '');
 
@@ -218,12 +231,14 @@ router.get('/:id', authenticateToken, (req, res) => {
       try {
         const fileContent = fs.readFileSync(filePath, 'utf8');
         const parsed = JSON.parse(fileContent);
+        res.set('Cache-Control', 'private, no-store');
         res.json({
           project: {
             id: project.id,
             name: project.name,
             createdAt: project.created_at,
             updatedAt: project.updated_at,
+            revision: projectRevision(project.name, fileContent),
             data: parsed.data || parsed
           }
         });
@@ -238,7 +253,7 @@ router.get('/:id', authenticateToken, (req, res) => {
 router.put('/:id', authenticateToken, (req, res) => {
   const { userId, username } = req.user;
   const projectId = req.params.id;
-  const { data, name } = req.body ?? {};
+  const { data, name, revision } = req.body ?? {};
 
   const validationError = validateDiagramData(data);
   if (validationError) {
@@ -268,9 +283,13 @@ router.put('/:id', authenticateToken, (req, res) => {
       };
 
       const filePath = getProjectPath(username, projectId);
+      const content = JSON.stringify(projectFileEnvelope, null, 2);
       try {
+        if (isStaleRevision(revision, project.name, filePath)) {
+          return res.status(409).json({ error: revisionConflict });
+        }
         fs.mkdirSync(path.dirname(filePath), { recursive: true });
-        atomicWriteFileSync(filePath, JSON.stringify(projectFileEnvelope, null, 2));
+        atomicWriteFileSync(filePath, content);
       } catch (fsErr) {
         console.error('Save file error:', fsErr);
         return res.status(500).json({ error: 'Failed to save project file to server' });
@@ -286,7 +305,8 @@ router.put('/:id', authenticateToken, (req, res) => {
           res.json({
             message: 'Project saved successfully',
             updatedAt: now,
-            name: updatedName
+            name: updatedName,
+            revision: projectRevision(updatedName, content)
           });
         }
       );
@@ -436,6 +456,7 @@ router.post('/:id/versions/:seq/restore', authenticateToken, (req, res) => {
   const { userId, username } = req.user;
   const projectId = req.params.id;
   const seq = parseVersionSeq(req.params.seq);
+  const revision = req.body?.revision;
 
   db.get(
     `SELECT * FROM projects WHERE id = ? AND user_id = ?`,
@@ -445,6 +466,10 @@ router.post('/:id/versions/:seq/restore', authenticateToken, (req, res) => {
       if (seq === null) return res.status(400).json({ error: 'Invalid version number' });
 
       try {
+        const liveFile = getProjectPath(username, projectId);
+        if (isStaleRevision(revision, project.name, liveFile)) {
+          return res.status(409).json({ error: revisionConflict });
+        }
         const versionsDir = getVersionsDir(username, projectId);
         const index = readVersionIndex(versionsDir);
         if (!index.some(v => v.seq === seq)) return res.status(404).json({ error: 'Version not found' });
@@ -465,7 +490,6 @@ router.post('/:id/versions/:seq/restore', authenticateToken, (req, res) => {
 
         // Auto-snapshot current work before overwriting so restore is reversible.
         try {
-          const liveFile = getProjectPath(username, projectId);
           if (fs.existsSync(liveFile)) {
             if (!fs.existsSync(versionsDir)) fs.mkdirSync(versionsDir, { recursive: true });
             const vIndex = readVersionIndex(versionsDir);
@@ -493,7 +517,8 @@ router.post('/:id/versions/:seq/restore', authenticateToken, (req, res) => {
           data: diagramData,
           meta: { ...(parsed.meta || {}), id: projectId, name: restoredName, updatedAt: now },
         };
-        atomicWriteFileSync(getProjectPath(username, projectId), JSON.stringify(restoredEnvelope, null, 2));
+        const content = JSON.stringify(restoredEnvelope, null, 2);
+        atomicWriteFileSync(liveFile, content);
 
         db.run(
           `UPDATE projects SET name = ?, updated_at = ? WHERE id = ? AND user_id = ?`,
@@ -505,6 +530,7 @@ router.post('/:id/versions/:seq/restore', authenticateToken, (req, res) => {
               restoredAt: now,
               name: restoredName,
               data: diagramData,
+              revision: projectRevision(restoredName, content),
             });
           }
         );

@@ -12,8 +12,20 @@ export interface ProjectMeta {
   updated_at: string;
 }
 
-export interface ProjectDetail extends ProjectMeta {
+export interface ProjectDetail {
+  id: string;
+  name: string;
+  revision: string;
   data: Record<string, any>;
+}
+
+export class ApiError extends Error {
+  readonly status: number;
+
+  constructor(message: string, status: number) {
+    super(message);
+    this.status = status;
+  }
 }
 
 const getHeaders = (hasBody = false): Record<string, string> => {
@@ -76,7 +88,7 @@ async function parseJsonResponse(res: Response, endpoint: string, authorization?
   }
 
   if (!res.ok) {
-    throw new Error(data.error || `Server error (${res.status})`);
+    throw new ApiError(data.error || `Server error (${res.status})`, res.status);
   }
   return data;
 }

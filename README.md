@@ -94,6 +94,14 @@ NodeCraft/
 
 ---
 
+## Concurrent cloud edits
+
+When another client saves or restores a project, NodeCraft keeps your local edits and flags the conflict. Use **File → Save As** to keep a local copy before reloading the cloud project.
+
+API clients can protect their writes by sending the `project.revision` from `GET /api/projects/:id` as the top-level `revision` in a project update or version restore request. A successful write returns the new revision. A stale revision returns HTTP `409` without writing the project. Legacy clients that omit the revision can still write unconditionally.
+
+---
+
 ## 📜 License
 
 This project is licensed under the GNU Affero General Public License v3.0 - see the [LICENSE](LICENSE) file for details.

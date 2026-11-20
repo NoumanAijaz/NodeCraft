@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { getDiagramData, useDiagramStore } from '../store/useDiagramStore';
-import { api } from '../utils/api';
+import { api, type ProjectDetail } from '../utils/api';
 import { TopNav } from './layout/TopNav';
 import { Sidebar } from './layout/Sidebar';
 import { Canvas } from './canvas/Canvas';
@@ -11,6 +11,7 @@ export const ProjectEditor: React.FC = () => {
   const navigate = useNavigate();
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [revision, setRevision] = useState<string | null>(null);
 
   const presentationMode = useDiagramStore((state) => state.presentationMode);
   const setProjectDetails = useDiagramStore((state) => state.setProjectDetails);
@@ -25,12 +26,12 @@ export const ProjectEditor: React.FC = () => {
         setLoading(true);
         setError(null);
 
-        const res = await api.get(`/projects/${id}`);
+        const { project } = await api.get<{ project: ProjectDetail }>(`/projects/${id}`);
         if (!current) return;
-        if (res.project) {
-          loadProject(res.project.data);
-          setProjectDetails(res.project.id, res.project.name);
-        }
+        if (!project?.revision) throw new Error('Missing cloud project revision');
+        loadProject(project.data);
+        setProjectDetails(project.id, project.name);
+        setRevision(project.revision);
       } catch (err: any) {
         if (!current) return;
         console.error('Failed to load project:', err);
@@ -97,7 +98,7 @@ export const ProjectEditor: React.FC = () => {
 
   return (
     <div className="h-screen w-screen flex flex-col bg-gray-50 dark:bg-slate-950 text-gray-900 dark:text-gray-100 overflow-hidden">
-      <TopNav />
+      <TopNav initialRevision={revision} />
       <div className="flex-1 flex min-h-0 relative">
         {!presentationMode && <Sidebar />}
         <main className="flex-1 relative h-full">

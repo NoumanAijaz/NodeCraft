@@ -14,7 +14,8 @@ interface VersionHistoryModalProps {
   isOpen: boolean;
   projectId: string | null;
   onClose: () => void;
-  onRestored: (data: any, name: string) => void;
+  onRestored: (data: any, name: string, revision: string) => void;
+  getRevision: () => string | null;
   showToast: (message: string, type?: 'success' | 'error' | 'info' | 'warning') => void;
 }
 
@@ -35,7 +36,7 @@ function formatSize(bytes: number): string {
   return `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
-export function VersionHistoryModal({ isOpen, projectId, onClose, onRestored, showToast }: VersionHistoryModalProps) {
+export function VersionHistoryModal({ isOpen, projectId, onClose, onRestored, getRevision, showToast }: VersionHistoryModalProps) {
   const [versions, setVersions] = useState<VersionEntry[]>([]);
   const [loading, setLoading] = useState(false);
   const [busySeq, setBusySeq] = useState<number | null>(null);
@@ -79,15 +80,16 @@ export function VersionHistoryModal({ isOpen, projectId, onClose, onRestored, sh
   };
 
   const handleRestore = async (v: VersionEntry) => {
-    if (!projectId) return;
+    const revision = getRevision();
+    if (!projectId || !revision) return;
     if (!window.confirm(`Restore version #${v.seq} from ${formatWhen(v.createdAt)}? Current canvas will be replaced.`)) return;
     setBusySeq(v.seq);
     try {
-      const res = await api.post<{ message: string; name: string; data: any }>(
+      const res = await api.post<{ name: string; data: any; revision: string }>(
         `/projects/${projectId}/versions/${v.seq}/restore`,
-        {}
+        { revision }
       );
-      onRestored(res.data, res.name);
+      onRestored(res.data, res.name, res.revision);
       showToast(`Restored version #${v.seq}`, 'success');
       onClose();
     } catch (err: any) {

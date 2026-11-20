@@ -1,4 +1,5 @@
 import { expect, test, type Page } from '@playwright/test';
+import { readFile } from 'node:fs/promises';
 
 async function createSession(page: Page) {
   await page.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
@@ -20,6 +21,173 @@ async function createProject(page: Page, headers: Record<string, string>, name: 
   const { project } = await response.json();
   return project.id as string;
 }
+
+async function openFileMenu(page: Page) {
+  await page.getByRole('button', { name: 'File', exact: true }).click();
+  await page.getByRole('button', { name: /^Open\.\.\./ }).click();
+}
+
+function shape(id: string, label: string, x = 0, borderColor = '#94a3b8') {
+  return {
+    id, type: 'shape', position: { x, y: 0 }, width: 240, height: 120,
+    data: { label, shapeType: 'rectangle', borderColor, borderWidth: 12 },
+  };
+}
+
+test('competing clients cannot save or restore against an old revision', async ({ page }) => {
+  const headers = await createSession(page);
+  const id = await createProject(page, headers, 'Revision checks');
+  const url = `/api/projects/${id}`;
+  const { project } = await (await page.request.get(url, { headers })).json();
+  const savedVersion = await page.request.post(`${url}/versions`, { headers, data: { label: 'Original' } });
+  expect(savedVersion.status()).toBe(201);
+  const { version } = await savedVersion.json();
+  const save = (boardNotes: string) => page.request.put(url, {
+    headers,
+    data: { revision: project.revision, data: { ...project.data, boardNotes } },
+  });
+
+  const responses = await Promise.all([save('First editor'), save('Second editor')]);
+  expect(responses.map(response => response.status()).sort()).toEqual([200, 409]);
+  const { revision } = await responses.find(response => response.ok())!.json();
+  expect(revision).not.toBe(project.revision);
+  const restoreUrl = `${url}/versions/${version.seq}/restore`;
+  const stale = await page.request.post(restoreUrl, { headers, data: { revision: project.revision } });
+  expect(stale.status()).toBe(409);
+  const current = await (await page.request.get(url, { headers })).json();
+  expect(current.project.revision).toBe(revision);
+  expect(current.project.data.boardNotes).toBe(responses[0].ok() ? 'First editor' : 'Second editor');
+  const restored = await page.request.post(restoreUrl, { headers, data: { revision } });
+  expect(restored.status()).toBe(200);
+  const restoredProject = await restored.json();
+  expect(restoredProject.revision).not.toBe(revision);
+  const afterRename = await page.request.put(`${url}/rename`, { headers, data: { name: 'Renamed elsewhere' } });
+  expect(afterRename.ok()).toBe(true);
+  const staleRenameSave = await page.request.put(url, {
+    headers, data: { revision: restoredProject.revision, data: restoredProject.data },
+  });
+  expect(staleRenameSave.status()).toBe(409);
+});
+
+test('a stale editor keeps its notes and shows a conflict', async ({ page }) => {
+  const headers = await createSession(page);
+  const id = await createProject(page, headers, 'Two tabs');
+  const editorUrl = `/project/${id}`;
+  const apiUrl = `/api/projects/${id}`;
+  await page.goto(editorUrl);
+  await page.getByRole('button', { name: 'Board Notepad' }).click();
+  const note = page.getByPlaceholder(/Jot down notes/);
+  const firstSave = page.waitForResponse(response =>
+    response.url().endsWith(apiUrl) && response.request().method() === 'PUT' && response.ok());
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await firstSave;
+
+  const other = await page.context().newPage();
+  await other.route(/^https:\/\/fonts\.(googleapis|gstatic)\.com\//, route => route.abort());
+  await other.goto(editorUrl);
+  await other.getByRole('button', { name: 'Board Notepad' }).click();
+  await other.getByPlaceholder(/Jot down notes/).fill('Saved in the other tab');
+  const saved = other.waitForResponse(response =>
+    response.url().endsWith(apiUrl) && response.request().method() === 'PUT' && response.ok() &&
+    response.request().postDataJSON().data.boardNotes === 'Saved in the other tab');
+  await other.getByRole('button', { name: 'Save', exact: true }).click();
+  await saved;
+
+  await note.fill('Still in my tab');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText('Cloud changed', { exact: true })).toBeVisible();
+  await expect(note).toHaveValue('Still in my tab');
+  const { project } = await (await page.request.get(apiUrl, { headers })).json();
+  expect(project.data.boardNotes).toBe('Saved in the other tab');
+
+  page.on('dialog', dialog => dialog.accept());
+  await page.reload();
+  await page.getByRole('button', { name: 'Board Notepad' }).click();
+  await expect(note).toHaveValue('Saved in the other tab');
+});
+
+test('opens a local diagram through the File System Access picker', async ({ page }) => {
+  const headers = await createSession(page);
+  const id = await createProject(page, headers, 'Open local file');
+  await page.addInitScript((diagram) => {
+    let calls = 0;
+    Object.defineProperty(window, 'showOpenFilePicker', {
+      configurable: true,
+      value: async () => {
+        if (calls++) throw new DOMException('The picker was cancelled.', 'AbortError');
+        const file = new File([JSON.stringify(diagram)], 'picked.ncraft', { type: 'application/json' });
+        return [{ getFile: async () => file }];
+      },
+    });
+  }, { nodes: [shape('from-local', 'Opened from local file')], edges: [] });
+  await page.goto(`/project/${id}`);
+  await openFileMenu(page);
+  await expect(page.getByText('Opened from local file', { exact: true })).toBeVisible();
+  await openFileMenu(page);
+  await expect(page.getByText('Opened from local file', { exact: true })).toBeVisible();
+  await expect(page.getByText('Failed to open file', { exact: true })).toHaveCount(0);
+});
+
+test('opens a local diagram through the browser file chooser fallback', async ({ page }) => {
+  const headers = await createSession(page);
+  const id = await createProject(page, headers, 'Open local file fallback');
+  await page.addInitScript(() => {
+    Reflect.deleteProperty(window, 'showOpenFilePicker');
+    Reflect.deleteProperty(Window.prototype, 'showOpenFilePicker');
+  });
+  await page.goto(`/project/${id}`);
+  const fileChooser = page.waitForEvent('filechooser');
+  await openFileMenu(page);
+  await (await fileChooser).setFiles({
+    name: 'fallback.ncraft', mimeType: 'application/json',
+    buffer: Buffer.from(JSON.stringify({ nodes: [shape('fallback', 'Opened via fallback')], edges: [] })),
+  });
+  await expect(page.getByText('Opened via fallback', { exact: true })).toBeVisible();
+});
+
+test('downloads an oversized diagram as a bounded PNG with both shapes rendered', async ({ page }) => {
+  test.setTimeout(60_000);
+  const headers = await createSession(page);
+  const id = await createProject(page, headers, 'Large raster');
+  const data = { nodes: [shape('left', 'Left', 0, '#ff0000'), shape('right', 'Right', 20_000, '#0000ff')], edges: [] };
+  const seeded = await page.request.put(`/api/projects/${id}`, { headers, data: { data } });
+  expect(seeded.ok()).toBe(true);
+  await page.goto(`/project/${id}`);
+  await expect(page.getByText('Right', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: 'Export', exact: true }).click();
+  const downloaded = page.waitForEvent('download');
+  await page.getByRole('button', { name: /Export as PNG/ }).click();
+  const download = await downloaded;
+  expect(download.suggestedFilename()).toBe('Large_raster.png');
+  const png = await readFile((await download.path())!);
+  expect(png.subarray(0, 8).toString('hex')).toBe('89504e470d0a1a0a');
+  const width = png.readUInt32BE(16);
+  const height = png.readUInt32BE(20);
+  expect(width).toBeGreaterThan(4000);
+  expect(width).toBeLessThanOrEqual(8192);
+  expect(height).toBeGreaterThan(0);
+  expect(width * height).toBeLessThanOrEqual(16_000_000);
+  const rendered = await page.evaluate(async (base64) => {
+    const image = new Image();
+    image.src = `data:image/png;base64,${base64}`;
+    await image.decode();
+    const canvas = document.createElement('canvas');
+    canvas.width = image.width;
+    canvas.height = image.height;
+    const context = canvas.getContext('2d')!;
+    context.drawImage(image, 0, 0);
+    const { data } = context.getImageData(0, 0, canvas.width, canvas.height);
+    let red = false;
+    let blue = false;
+    for (let pixel = 0; pixel < data.length; pixel += 4) {
+      const [r, g, b] = [data[pixel], data[pixel + 1], data[pixel + 2]];
+      if (r > 175 && g < 90 && b < 90) red = true;
+      if (b > 175 && r < 90 && g < 90) blue = true;
+    }
+    return { red, blue };
+  }, png.toString('base64'));
+  expect(rendered).toEqual({ red: true, blue: true });
+});
 
 test('autosaves a board note on its own, even while presenting', async ({ page }) => {
   const headers = await createSession(page);

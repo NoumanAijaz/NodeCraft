@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { useShallow } from 'zustand/react/shallow';
 import { useDiagramStore, getAbsolutePosition, getDiagramData } from '../../store/useDiagramStore';
 import type { FileSystemFileHandle } from '../../types/diagram';
-import { api } from '../../utils/api';
+import { api, ApiError } from '../../utils/api';
 import { 
   Download, 
   Image as ImageIcon, 
@@ -57,7 +57,7 @@ function useClickOutside(ref: React.RefObject<HTMLElement | null>, handler: () =
 const isMac = typeof window !== 'undefined' && /Mac|iPod|iPhone|iPad/.test(navigator.platform || navigator.userAgent);
 const pendingCloudSaves = new Map<string, Promise<unknown>>();
 
-export function TopNav() {
+export function TopNav({ initialRevision }: { initialRevision: string | null }) {
   const navigate = useNavigate();
   const clearCanvas = useDiagramStore((state) => state.clearCanvas);
   const nodes = useDiagramStore((state) => state.nodes);
@@ -88,7 +88,8 @@ export function TopNav() {
   const currentSnapshot = useMemo(() => JSON.stringify(diagramData), [diagramData]);
   
   const { showToast } = useToast();
-  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved'>('saved');
+  const [saveStatus, setSaveStatus] = useState<'saved' | 'saving' | 'unsaved' | 'conflict'>('saved');
+  const cloudSessionRef = useRef({ revision: initialRevision, conflict: '' });
   
   // Dropdown states
   const [menuOpen, setMenuOpen] = useState(false);
@@ -160,10 +161,12 @@ export function TopNav() {
     };
   }, [showToast]);
 
-  const handleVersionRestored = (data: any, name: string) => {
+  const handleVersionRestored = (data: any, name: string, revision: string) => {
+    cloudSessionRef.current = { revision, conflict: '' };
     const store = useDiagramStore.getState();
     store.loadProject({ ...data, nodes: data.nodes || [], edges: data.edges || [] });
     if (projectId && name) store.setProjectDetails(projectId, name);
+    setSaveStatus('saved');
     // loadProject snapshots restored state as saved — correct: server file IS this state now
     setTimeout(() => reactFlowInstance?.fitView({ duration: 400, padding: 0.15 }), 60);
   };
@@ -311,7 +314,12 @@ export function TopNav() {
   useEffect(() => () => { saveRevisionRef.current += 1; }, []);
 
   const handleCloudSave = useCallback(async (silent = false) => {
-    if (!projectId) return;
+    const cloudSession = cloudSessionRef.current;
+    if (!projectId || !cloudSession.revision) return;
+    if (cloudSession.conflict) {
+      if (!silent) showToast(cloudSession.conflict, 'warning');
+      return;
+    }
     // Monotonic revision so a stale save that resolves AFTER a newer save
     // started can't clobber the newer status/snapshot (out-of-order resolves).
     const revision = ++saveRevisionRef.current;
@@ -324,10 +332,20 @@ export function TopNav() {
       // would mark mid-save edits as saved without uploading them.
       const snapshot = JSON.stringify(diagramData);
 
-      const send = () => api.put(`/projects/${projectId}`, {
-        data: diagramData,
-        name: projectName || 'Untitled Diagram',
-      });
+      const send = async () => {
+        if (cloudSession.conflict) throw new ApiError(cloudSession.conflict, 409);
+        try {
+          const result = await api.put<{ revision: string }>(`/projects/${projectId}`, {
+            data: diagramData,
+            name: projectName || 'Untitled Diagram',
+            revision: cloudSession.revision,
+          });
+          cloudSession.revision = result.revision;
+        } catch (err) {
+          if (err instanceof ApiError && err.status === 409) cloudSession.conflict = err.message;
+          throw err;
+        }
+      };
       // Serialize writes even if the editor unmounts and reopens the same project.
       const previous = pendingCloudSaves.get(projectId);
       request = previous ? previous.then(send, send) : send();
@@ -336,14 +354,21 @@ export function TopNav() {
 
       // A newer save started after this one — its outcome (and its
       // markSaved/setSaveStatus) is authoritative; don't clobber it.
-      if (revision !== saveRevisionRef.current || useDiagramStore.getState().projectId !== projectId) return;
+      if (revision !== saveRevisionRef.current || cloudSession !== cloudSessionRef.current ||
+        useDiagramStore.getState().projectId !== projectId) return;
       markSaved(snapshot);
       setSaveStatus('saved');
       if (!silent) {
         showToast('Saved to cloud', 'success');
       }
     } catch (err) {
-      if (revision !== saveRevisionRef.current || useDiagramStore.getState().projectId !== projectId) return;
+      if (revision !== saveRevisionRef.current || cloudSession !== cloudSessionRef.current ||
+        useDiagramStore.getState().projectId !== projectId) return;
+      if (cloudSession.conflict) {
+        setSaveStatus('conflict');
+        showToast(cloudSession.conflict, 'warning');
+        return;
+      }
       console.error('Failed to save project:', err);
       setSaveStatus('unsaved');
       if (!silent) {
@@ -365,7 +390,7 @@ export function TopNav() {
 
   // 3-second debounced auto-save effect — skip when no actual edits since last save/load
   useEffect(() => {
-    if (!projectId) return;
+    if (!projectId || cloudSessionRef.current.conflict) return;
     if (lastSavedSnapshot && currentSnapshot === lastSavedSnapshot) {
       setSaveStatus('saved');
       return;
@@ -701,7 +726,7 @@ export function TopNav() {
               ) : (
                 <span className="ml-2 inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[9px] bg-amber-50 dark:bg-amber-950/30 text-amber-600 dark:text-amber-400 border border-amber-100 dark:border-amber-800/40 font-semibold shrink-0">
                   <span className="w-1 h-1 bg-amber-500 rounded-full" />
-                  Unsaved
+                  {saveStatus === 'conflict' ? 'Cloud changed' : 'Unsaved'}
                 </span>
               )
             ) : fileHandle ? (
@@ -1022,6 +1047,7 @@ export function TopNav() {
         projectId={projectId}
         onClose={() => setVersionsOpen(false)}
         onRestored={handleVersionRestored}
+        getRevision={() => cloudSessionRef.current.revision}
         showToast={showToast}
       />
     </nav>
